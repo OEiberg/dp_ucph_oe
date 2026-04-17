@@ -73,6 +73,10 @@ np.random.seed(2026)
 
 ## Project Description {.unnumbered}
 
+In this term paper, we will extend the model developed by Aguirregabria (2023) by incorporating the possibility of purchasing multiple units of a storable good at time...
+Does allowing for quantity choice improve the modeling of forward-looking demand by capturing dynamic information beyond duration since last purchase and brand switching costs?
 
+
+Our key reference is Aquirregabria (2023) who develops a dynamic demand model for differentaited products with fixed-effects unobserved heterogeneity. The model differs to other papers buy modelling unobserved heterogenity with fixed effects as opposed to random effects. The model 
 
 
