@@ -19,27 +19,35 @@ Our contribution: relax the unit-purchase assumption and let depletion depend **
 ## Extended model
 
 ### State variables
-- `ℓ_{it}` — brand chosen at last purchase, `∈ {1,...,J}`
-- `d_{it}` — duration since last purchase, `∈ {1,...,D*}`
-- **`q_{it}` — quantity purchased at last purchase event, `∈ {1,...,Q̄}`** (new)
+
+- $\ell_{it}$ — brand chosen at last purchase, $\in \{1, \ldots, J\}$
+- $d_{it}$ — duration since last purchase, $\in \{1, \ldots, D^*\}$
+- $q_{it}$ — quantity purchased at last purchase event, $\in \{1, \ldots, \bar{Q}\}$ **(new)**
 
 ### Choice set
-`y_{it} ∈ {0} ∪ {(j, q) : j ∈ {1,...,J}, q ∈ {1,...,Q̄}}`. Total alternatives: `J·Q̄ + 1`.
+
+$y_{it} \in \{0\} \cup \{(j,q) : j \in \{1,\ldots,J\},\, q \in \{1,\ldots,\bar{Q}\}\}$.
+Total alternatives: $J \cdot \bar{Q} + 1$.
 
 ### Transition rule
-```
-(ℓ_{i,t+1}, d_{i,t+1}, q_{i,t+1}) = (ℓ_{it}, d_{it} + 1, q_{it})      if y_{it} = 0
-                                  = (j, 1, q)                         if y_{it} = (j, q)
-```
+$(\ell_{i,t+1},\, d_{i,t+1},\, q_{i,t+1}) =
+\begin{cases}
+(\ell_{it},\; d_{it} + 1,\; q_{it}) & \text{if } y_{it} = 0 \\
+(j,\; 1,\; q)                       & \text{if } y_{it} = (j, q)
+\end{cases}$
+
 
 ### Utility
-```
-U_{it} = 0 (no purchase):
-    α_i(ℓ) + γ·h(μ_i) − β^dep(ℓ, q_{it}, d_{it}) + ε_{it}(0)
 
-U_{it} = (j, q) (buy q units of brand j):
-    α_i(j) + γ·h(μ_i − q·p_{it}(j)) − β^sc(ℓ_{it}, j) − β^qty(j, q) + ε_{it}(j,q)
-```
+**No purchase** ($y_{it} = 0$):
+$
+U_{it}(0) = \alpha_i(\ell) + \gamma \cdot h(\mu_i) - \beta^{\mathrm{dep}}(\ell,\, q_{it},\, d_{it}) + \varepsilon_{it}(0)
+$
+
+**Buy $q$ units of brand $j$** ($y_{it} = (j,q)$):
+$
+U_{it}(j,q) = \alpha_i(j) + \gamma \cdot h(\mu_i - q \cdot p_{it}(j)) - \beta^{\mathrm{sc}}(\ell_{it},\, j) - \beta^{\mathrm{qty}}(j,\, q) + \varepsilon_{it}(j,q)
+$
 
 Where:
 - **`β^dep(j, q, d)`** is the non-parametric depletion function — the target object of interest. Saturation `β^dep(j, q, d) = β^dep(j, q, d*_{j,q})` for `d ≥ d*_{j,q}`, following Aguirregabiria's Assumption 3.2 extended pointwise in `q`.
@@ -63,14 +71,14 @@ Aguirregabiria's CML identification (Section 3) rests on finding **history pairs
 ### New pairs for `β^dep(j, q, d)`
 Extend Aguirregabiria's duration-identifying pair (Eq. 3.25, p. 18):
 
-- `A_{j,q,n} = ((j,q), 0_{n−1}, (j,q), 0_{n+1})`
-- `B_{j,q,n} = ((j,q), 0_n,   (j,q), 0_n)`
+- $`A_{j,q,n} = ((j,q), 0_{n−1}, (j,q), 0_{n+1})`$
+- $`B_{j,q,n} = ((j,q), 0_n,   (j,q), 0_n)`$
 
-Both histories purchase the same `(j, q)` twice and spend the same total time not purchasing. They visit different `(ℓ, q, d)` tuples at the σ-points, but under saturation `d ≥ d*_{j,q}` the continuation values match. Then (analogous to Aguirregabiria's Prop., Eq. 3.31):
+Both histories purchase the same $`(j, q)`$ twice and spend the same total time not purchasing. They visit different $`(ℓ, q, d)`$ tuples at the σ-points, but under saturation $`d ≥ d*_{j,q}`$ the continuation values match. Then (analogous to Aguirregabiria's Prop., Eq. 3.31):
 
-```
-log P(A_{j,q,n}) − log P(B_{j,q,n}) = −β^dep(j, q, d*_{j,q})     for n = d*_{j,q} − 1
-```
+
+$log P(A_{j,q,n}) − log P(B_{j,q,n}) = −β^dep(j, q, d*_{j,q})     for n = d*_{j,q} − 1$
+
 
 Varying `q` across history pairs identifies the quantity-dependent depletion rate.
 
