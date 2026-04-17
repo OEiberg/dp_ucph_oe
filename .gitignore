@@ -19,3 +19,12 @@
 3_discrete_continuous_choice/z_source_not_shared
 4_dynamic_games/z_private_repo
 2_dynamic_discrete_choice/z_slides_not_shared
+
+.venv/
+
+**/*.quarto_ipynb
+.claude/settings.local.json
+Data/stock_characteristics_monthly.parquet
+Data/factors_ff3_monthly.parquet
+
+/.quarto/
