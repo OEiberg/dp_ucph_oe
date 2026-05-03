@@ -1,0 +1,639 @@
+---
+title: Project Description
+author:
+  - Solveig Røndal-Liniger (szc836)
+  - Oliver Eiberg Jørgensen (zkt394)
+date: 2026-04-23
+date-format: MMMM DD, YYYY
+jupyter: python3
+execute: 
+  echo: false
+  warning: false
+format:
+  pdf: 
+    number-sections: true
+    colorlinks: true
+    geometry:
+      - top=30mm
+      - left=25mm
+      - bottom=25mm
+      - right=25mm
+      - includefoot=false
+    lang: en
+    fontsize: 12pt
+    highlight-style: github-light
+    include-in-header:
+      text: |
+        \usepackage{setspace}
+        \usepackage{booktabs}
+        \setstretch{1.3}
+        \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{section}
+        \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{subsection}
+        \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{subsubsection}
+        \usepackage{fancyhdr}
+        \usepackage{graphicx}
+        \usepackage{eso-pic}
+        \pagestyle{fancy}
+        \setlength{\footskip}{36pt}
+        \fancyhf{}
+        \lfoot{\shortstack[l]{{\bfseries University of Copenhagen}\\Department of Economics}}
+        \rfoot{\thepage}
+        \renewcommand{\headrulewidth}{0pt}
+        \renewcommand{\footrulewidth}{0pt}
+        \fancypagestyle{plain}{%
+          \fancyhf{}
+          \lfoot{\shortstack[l]{{\bfseries University of Copenhagen}\\Department of Economics}}
+          \rfoot{\thepage}
+          \renewcommand{\headrulewidth}{0pt}
+          \renewcommand{\footrulewidth}{0pt}
+        }
+        \AddToShipoutPictureFG{%
+          \AtPageUpperLeft{%
+            \put(\LenToUnit{\paperwidth-10mm-5cm},\LenToUnit{-2.5cm}){%
+              \includegraphics[width=5cm]{ku_logo_uk_h.png}%
+            }%
+          }%
+        }
+---
+
+<!-- Importing libraries -->
+```{python}
+# Loading necessary libraries
+import pandas as pd
+import numpy as np
+from scipy.optimize import minimize
+from scipy.special import expit
+from scipy.stats import chi2, norm
+
+# Set seed for reproducibility (used in exercise 5)
+np.random.seed(2026)
+```
+\newpage
+
+## Setup of the Original Model as in @Agu2023 {.unnumbered}
+
+We implement the dynamic discrete-choice demand model of @Agu2023. A
+consumer $i$ each period $t$ chooses $y_{it}\in\{0,1,\dots,J\}$ where
+$y_{it}=0$ is "no purchase" and $y_{it}=j>0$ is buying brand $j$. The
+endogenous state $x_{it}=(\ell_{it},d_{it})$ records the last brand
+purchased and the duration since the last purchase. Prices have a
+persistent component $z_{it}$ and a transitory (promotion) component
+$e_{it}$. With i.i.d. Type-I Extreme Value shocks the per-period payoff
+absent the shock is
+
+$$
+u_{\alpha_i}(y,x,p)=
+\begin{cases}
+\alpha_i(\ell)+\gamma h(\mu_i)-\beta^{dep}(\ell)\,d & y=0,\\
+\alpha_i(j)+\gamma h(\mu_i-p(j))-\beta^{sc}(\ell,j) & y=j>0.
+\end{cases}
+$$
+
+The block below sets up the primitives, solves the consumer's Bellman
+equation by VFI (used only for simulating data), simulates a panel, and
+estimates $\theta=(\gamma,\beta^{sc},\beta^{dep})$ by the
+sufficient-statistic Conditional Maximum Likelihood (CML) estimator
+described in Sections 3–4 of the paper.
+
+```{python}
+#| output: asis
+
+# -----------------------------------------------------------------------------
+# Primitives and simulation helpers
+# -----------------------------------------------------------------------------
+# Main dimensions. `J` can be changed between 2 and 4 with the calibration below.
+J = 2
+N = 10000
+T = 40
+D_MAX = 5
+DELTA = 0.95
+MU = 5.0
+N_TYPES = 8
+
+# Structural parameters used to generate the simulated data.
+gamma_true = 0.5
+
+# The arrays ending in `_all` store a four-brand baseline calibration. After the
+# dimension check below, we slice them down to the requested number of brands.
+base_prices_all = np.array([1.85, 2.05, 2.20, 1.95])
+promo_discount_all = np.array([0.45, 0.45, 0.50, 0.40])
+promo_entry = 0.18
+promo_persist = 0.62
+
+# Depreciation costs apply when the consumer does not buy. Switching costs apply
+# when a positive purchase choice differs from the current last brand.
+beta_dep_all = np.array([0.10, 0.13, 0.11, 0.14])
+beta_sc_all = np.array(
+    [
+        [0.00, 0.55, 0.70, 0.60],
+        [0.50, 0.00, 0.58, 0.66],
+        [0.62, 0.52, 0.00, 0.54],
+        [0.57, 0.64, 0.56, 0.00],
+    ]
+)
+
+if not 2 <= J <= len(base_prices_all):
+    raise ValueError(f"J must be between 2 and {len(base_prices_all)} with the current calibration.")
+
+base_prices = base_prices_all[:J]
+promo_discount = promo_discount_all[:J]
+beta_dep_true = beta_dep_all[:J]
+beta_sc_true = beta_sc_all[:J, :J]
+
+# The CML likelihood estimates gamma plus one symmetric switching-cost object
+# for each unordered brand pair (k, j).
+n_pairs = J * (J - 1) // 2
+pair_to_index = {
+    (k, j): idx
+    for idx, (k, j) in enumerate(
+        (k, j) for k in range(1, J + 1) for j in range(k + 1, J + 1)
+    )
+}
+
+# Every promotion state is a binary vector indicating which brands are on sale.
+# With J brands there are 2^J possible promotion vectors.
+promo_states = np.array(
+    [[(s >> j) & 1 for j in range(J)] for s in range(2**J)],
+    dtype=int,
+)
+
+
+def h(consumption):
+    """Utility from net-of-price resources."""
+    return np.log(np.maximum(consumption, 1e-8))
+
+
+def prices_from_promo(e_vec):
+    # A promotion lowers the brand price by the brand-specific discount.
+    return base_prices - promo_discount * e_vec
+
+
+def price_utility(e_vec, brand):
+    # Brands are numbered 1,...,J in the economic model, while Python is 0-indexed.
+    price = prices_from_promo(e_vec)[brand - 1]
+    return h(MU - price)
+
+
+def make_promo_transition():
+    """Transition matrix over all binary promotion vectors."""
+    n_states = len(promo_states)
+    transition = np.empty((n_states, n_states))
+
+    for s, current in enumerate(promo_states):
+        # Promotions follow independent two-state Markov chains by brand.
+        prob_one = np.where(current == 1, promo_persist, promo_entry)
+        for sp, nxt in enumerate(promo_states):
+            probs = np.where(nxt == 1, prob_one, 1.0 - prob_one)
+            transition[s, sp] = probs.prod()
+
+    return transition
+
+
+promo_transition = make_promo_transition()
+
+
+def utility(choice, last_brand, duration, e_vec, alpha):
+    """Current-period deterministic payoff for a choice."""
+    if choice == 0:
+        # No purchase keeps the last brand and increases duration by one.
+        return alpha[last_brand - 1] + gamma_true * h(MU) - beta_dep_true[last_brand - 1] * duration
+
+    # A purchase resets duration to zero and may incur a switching cost.
+    return (
+        alpha[choice - 1]
+        + gamma_true * price_utility(e_vec, choice)
+        - beta_sc_true[last_brand - 1, choice - 1]
+    )
+
+
+def solve_consumer(alpha, tol=1e-9, max_iter=1_000):
+    """Solve the finite-state Bellman equation for one preference type."""
+    n_promo = len(promo_states)
+
+    # V[last brand, duration, promotion state] stores the ex-ante value before
+    # the consumer observes the Type-I Extreme Value choice shock.
+    V = np.zeros((J, D_MAX + 1, n_promo))
+
+    for _ in range(max_iter):
+        # Expected continuation values integrate over next period's promotion
+        # vector using the exogenous promotion transition matrix.
+        expected_V = (V.reshape(J * (D_MAX + 1), n_promo) @ promo_transition.T).reshape(
+            J, D_MAX + 1, n_promo
+        )
+        V_new = np.empty_like(V)
+
+        for l_idx in range(J):
+            last_brand = l_idx + 1
+            for duration in range(D_MAX + 1):
+                next_duration = min(duration + 1, D_MAX)
+                for s, e_vec in enumerate(promo_states):
+                    values = np.empty(J + 1)
+
+                    # Choice 0 is no purchase: last brand is unchanged.
+                    values[0] = utility(0, last_brand, duration, e_vec, alpha) + DELTA * expected_V[
+                        l_idx, next_duration, s
+                    ]
+
+                    # Choices 1,...,J are purchase choices: the chosen brand
+                    # becomes the new last brand and duration resets to zero.
+                    for choice in range(1, J + 1):
+                        values[choice] = utility(choice, last_brand, duration, e_vec, alpha) + DELTA * expected_V[
+                            choice - 1, 0, s
+                        ]
+
+                    # Log-sum-exp is the closed-form expectation over EV shocks.
+                    max_value = values.max()
+                    V_new[l_idx, duration, s] = max_value + np.log(np.exp(values - max_value).sum())
+
+        if np.max(np.abs(V_new - V)) < tol:
+            V = V_new
+            break
+        V = V_new
+
+    return V
+
+
+def choice_probabilities(V, alpha):
+    """Choice probabilities implied by the solved value function."""
+    n_promo = len(promo_states)
+
+    # Recompute choice-specific values at the fixed point, then transform them
+    # into multinomial logit probabilities.
+    expected_V = (V.reshape(J * (D_MAX + 1), n_promo) @ promo_transition.T).reshape(
+        J, D_MAX + 1, n_promo
+    )
+    probs = np.empty((J, D_MAX + 1, n_promo, J + 1))
+
+    for l_idx in range(J):
+        last_brand = l_idx + 1
+        for duration in range(D_MAX + 1):
+            next_duration = min(duration + 1, D_MAX)
+            for s, e_vec in enumerate(promo_states):
+                values = np.empty(J + 1)
+                values[0] = utility(0, last_brand, duration, e_vec, alpha) + DELTA * expected_V[
+                    l_idx, next_duration, s
+                ]
+                for choice in range(1, J + 1):
+                    values[choice] = utility(choice, last_brand, duration, e_vec, alpha) + DELTA * expected_V[
+                        choice - 1, 0, s
+                    ]
+                weights = np.exp(values - values.max())
+                probs[l_idx, duration, s] = weights / weights.sum()
+
+    return probs
+
+
+def draw_next_promo_state(current_state):
+    return np.random.choice(len(promo_states), p=promo_transition[current_state])
+
+
+def simulate_panel():
+    """Simulate purchase histories from the solved dynamic model."""
+    # Instead of solving N separate dynamic programs, draw consumers from a
+    # small set of unobserved preference types and solve once per type.
+    alpha_types = np.random.normal(loc=0.0, scale=0.35, size=(N_TYPES, J))
+    type_id = np.random.choice(N_TYPES, size=N)
+    alpha_panel = alpha_types[type_id]
+    policies = [choice_probabilities(solve_consumer(alpha_types[m]), alpha_types[m]) for m in range(N_TYPES)]
+
+    # Y is the observed choice. L, D, and E keep the simulated state variables
+    # used for diagnostics and for constructing the CML histories.
+    Y = np.zeros((N, T), dtype=int)
+    L = np.zeros((N, T), dtype=int)
+    D = np.zeros((N, T), dtype=int)
+    E = np.zeros((N, T, J), dtype=int)
+
+    last_brand = np.random.choice(np.arange(1, J + 1), size=N)
+    duration = np.random.randint(0, D_MAX + 1, size=N)
+    promo_state = np.random.choice(len(promo_states), size=N)
+
+    for i in range(N):
+        policy = policies[type_id[i]]
+        for t in range(T):
+            # Record the state at the start of the period, then draw one choice
+            # from the solved policy for that state.
+            l_idx = last_brand[i] - 1
+            d_idx = duration[i]
+            s_idx = promo_state[i]
+
+            L[i, t] = last_brand[i]
+            D[i, t] = duration[i]
+            E[i, t] = promo_states[s_idx]
+            Y[i, t] = np.random.choice(np.arange(J + 1), p=policy[l_idx, d_idx, s_idx])
+
+            # Deterministic endogenous state transition implied by the choice.
+            if Y[i, t] == 0:
+                duration[i] = min(duration[i] + 1, D_MAX)
+            else:
+                last_brand[i] = Y[i, t]
+                duration[i] = 0
+
+            promo_state[i] = draw_next_promo_state(s_idx)
+
+    return Y, L, D, E, alpha_panel
+
+
+def cml_pairs(Y, E):
+    """Build CML cells from (k,j,k,j) and (k,k,j,j) four-period histories."""
+    cells = []
+    for i in range(Y.shape[0]):
+        for t in range(Y.shape[1] - 3):
+            window = tuple(Y[i, t : t + 4])
+
+            # The sufficient-statistic comparison uses four consecutive purchase
+            # occasions, so histories with no-purchase choices are skipped here.
+            if 0 in window:
+                continue
+
+            # The current implementation follows the special case where the last
+            # two transitory price components are equal, which cancels nuisance
+            # continuation terms in the CML comparison.
+            if not np.array_equal(E[i, t + 2], E[i, t + 3]):
+                continue
+
+            for k in range(1, J + 1):
+                for j in range(k + 1, J + 1):
+                    # A is the alternating history (k,j,k,j); B is the grouped
+                    # history (k,k,j,j). They have the same sufficient statistic
+                    # for fixed effects but differ in gamma and switching costs.
+                    if window == (k, j, k, j):
+                        is_a = True
+                    elif window == (k, k, j, j):
+                        is_a = False
+                    else:
+                        continue
+
+                    # Price-utility contrast entering the A-versus-B logit.
+                    x_gamma = (
+                        price_utility(E[i, t + 1], j)
+                        + price_utility(E[i, t + 2], k)
+                        - price_utility(E[i, t + 1], k)
+                        - price_utility(E[i, t + 2], j)
+                    )
+                    cells.append((pair_to_index[(k, j)], x_gamma, is_a))
+
+    return cells
+
+
+def cml_loglik(theta, cells):
+    """Conditional log-likelihood for the A-versus-B history comparison."""
+    loglik = 0.0
+    for pidx, xg, isA in cells:
+        # Parameter vector: theta[0] is gamma; theta[1:] are beta_tilde(k,j).
+        x = np.zeros_like(theta)
+        x[0] = xg
+        x[1 + pidx] = -1.0
+        diff = theta @ x
+        loglik += -np.logaddexp(0.0, -diff) if isA else -np.logaddexp(0.0, diff)
+
+    return loglik
+
+
+def cml_negloglik_grad(theta, cells):
+    """Gradient of the negative conditional log-likelihood."""
+    grad = np.zeros_like(theta)
+    for pidx, xg, isA in cells:
+        # Supplying the analytic gradient makes BFGS much more stable for large N.
+        x = np.zeros_like(theta)
+        x[0] = xg
+        x[1 + pidx] = -1.0
+        grad += (expit(theta @ x) - float(isA)) * x
+
+    return grad
+
+
+def cml_score_and_info(theta, cells):
+    """Outer-product scores and Hessian information for logit CML."""
+    theta = np.asarray(theta)
+    n_params = theta.size
+
+    # Scores are kept observation by observation for the sandwich covariance.
+    scores = np.zeros((len(cells), n_params))
+    info = np.zeros((n_params, n_params))
+
+    for r, (pidx, xg, isA) in enumerate(cells):
+        x = np.zeros(n_params)
+        x[0] = xg
+        x[1 + pidx] = -1.0
+
+        diff = theta @ x
+        y = float(isA)
+        p = expit(diff)
+        scores[r] = (y - p) * x
+        info += p * (1.0 - p) * np.outer(x, x)
+
+    return scores, info
+
+
+def estimate_cml(cells):
+    """Maximize the (globally concave) conditional log-likelihood (eq. 3.13)."""
+    n_params = 1 + n_pairs
+    res = minimize(
+        lambda t: -cml_loglik(t, cells),
+        jac=lambda t: cml_negloglik_grad(t, cells),
+        x0=np.zeros(n_params),
+        method="BFGS",
+        options={"disp": False},
+    )
+    return res
+
+
+def cml_covariance(theta_hat, cells):
+    """Return model-based and sandwich covariance matrices for theta_hat."""
+    scores, info = cml_score_and_info(theta_hat, cells)
+    meat = scores.T @ scores
+    info_inv = np.linalg.pinv(info)
+    cov_model = info_inv
+
+    # The robust version allows for misspecification or remaining dependence in
+    # the constructed CML cells.
+    cov_robust = info_inv @ meat @ info_inv
+    return cov_model, cov_robust
+
+
+def make_estimate_table(theta_hat, cov, btil_true):
+    """Create parameter table with true values, estimates, and inference."""
+    se = np.sqrt(np.diag(cov))
+    true = np.r_[gamma_true, btil_true]
+    names = [r"$\gamma$"]
+    for k in range(1, J + 1):
+        for j in range(k + 1, J + 1):
+            names.append(rf"$\tilde{{\beta}}_{{{k},{j}}}$")
+
+    rows = []
+    for name, true_value, estimate, std_err in zip(names, true, theta_hat, se):
+        z_stat = estimate / std_err if std_err > 0 else np.nan
+        p_value = 2.0 * (1.0 - norm.cdf(abs(z_stat))) if np.isfinite(z_stat) else np.nan
+        rows.append(
+            {
+                "Parameter": name,
+                "True": true_value,
+                "CML estimate": estimate,
+                "Std. err.": std_err,
+                "z-stat": z_stat,
+                "p-value": p_value,
+                r"CI 2.5\%": estimate - 1.96 * std_err,
+                r"CI 97.5\%": estimate + 1.96 * std_err,
+                "Bias": estimate - true_value,
+            }
+        )
+
+    # beta_dep is present in the DGP, but not identified by this CML likelihood.
+    for j, true_value in enumerate(beta_dep_true, start=1):
+        rows.append(
+            {
+                "Parameter": rf"$\beta^{{dep}}_{{{j}}}$",
+                "True": true_value,
+                "CML estimate": np.nan,
+                "Std. err.": np.nan,
+                "z-stat": np.nan,
+                "p-value": np.nan,
+                r"CI 2.5\%": np.nan,
+                r"CI 97.5\%": np.nan,
+                "Bias": np.nan,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def lr_test(theta_hat, cells):
+    """Likelihood-ratio test of all identified CML coefficients equal to zero."""
+    ll_full = cml_loglik(theta_hat, cells)
+    theta_null = np.zeros_like(theta_hat)
+    ll_null = cml_loglik(theta_null, cells)
+    lr_stat = 2.0 * (ll_full - ll_null)
+    df = theta_hat.size
+    p_value = chi2.sf(lr_stat, df)
+    return ll_full, ll_null, lr_stat, df, p_value
+
+
+def print_latex_table(data, caption, label, escape=True):
+    """Print a pandas table as raw LaTeX for Quarto."""
+    # Quarto receives this chunk as `output: asis`, so the LaTeX is rendered
+    # directly in the PDF rather than printed as console output.
+    print(
+        data.to_latex(
+            index=False,
+            escape=escape,
+            na_rep="",
+            float_format=lambda value: f"{value:.4f}",
+            caption=caption,
+            label=label,
+            position="!htbp",
+        )
+    )
+    print()
+
+
+# -----------------------------------------------------------------------------
+# Run the pipeline: simulate, build sufficient-statistic cells, estimate, report
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    Y, L, D, E, alpha_panel = simulate_panel()
+    cells = cml_pairs(Y, E)
+
+    # True symmetric switching costs: beta_tilde(k,j) = beta_sc(k,j) + beta_sc(j,k).
+    btil_true = np.array(
+        [
+            beta_sc_true[k - 1, j - 1] + beta_sc_true[j - 1, k - 1]
+            for k in range(1, J + 1)
+            for j in range(k + 1, J + 1)
+        ]
+    )
+
+    if len(cells) >= 4:
+        res = estimate_cml(cells)
+        theta_hat = res.x
+        cov_model, cov_robust = cml_covariance(theta_hat, cells)
+        table = make_estimate_table(theta_hat, cov_robust, btil_true)
+
+        ll_full, ll_null, lr_stat, lr_df, lr_p = lr_test(theta_hat, cells)
+        n_params = theta_hat.size
+        aic = 2 * n_params - 2 * ll_full
+        bic = np.log(len(cells)) * n_params - 2 * ll_full
+        pseudo_r2 = 1.0 - ll_full / ll_null if ll_null != 0 else np.nan
+
+        alpha_sd = ", ".join(f"{value:.3f}" for value in alpha_panel.std(axis=0, ddof=1))
+        summary_table = pd.DataFrame(
+            {
+                "Statistic": [
+                    "Consumers",
+                    "Periods",
+                    "Brands",
+                    "Observed purchases",
+                    "Purchase rate",
+                    r"Sufficient-statistic cells with $e_3=e_4$",
+                    "Alpha FE sample std. dev.",
+                    "Optimizer converged",
+                    "Optimizer iterations",
+                ],
+                "Value": [
+                    f"{N}",
+                    f"{T}",
+                    f"{J}",
+                    f"{(Y > 0).sum()} of {Y.size}",
+                    f"{(Y > 0).mean():.3%}".replace("%", r"\%"),
+                    f"{len(cells)}",
+                    alpha_sd,
+                    f"{res.success} ({res.message})",
+                    f"{res.nit}",
+                ],
+            }
+        )
+        print_latex_table(
+            summary_table,
+            caption="Simulation and CML estimation summary.",
+            label="tbl:cml-summary",
+            escape=False,
+        )
+
+        print_latex_table(
+            table,
+            caption="CML parameter estimates.",
+            label="tbl:cml-estimates",
+            escape=False,
+        )
+
+        fit_table = pd.DataFrame(
+            {
+                "Statistic": [
+                    "Log-likelihood",
+                    "Null log-likelihood",
+                    r"Pseudo $R^2$",
+                    "AIC",
+                    "BIC",
+                    r"LR test statistic",
+                    "LR test df",
+                    "LR test p-value",
+                ],
+                "Value": [
+                    f"{ll_full:.4f}",
+                    f"{ll_null:.4f}",
+                    f"{pseudo_r2:.4f}",
+                    f"{aic:.4f}",
+                    f"{bic:.4f}",
+                    f"{lr_stat:.4f}",
+                    f"{lr_df:d}",
+                    f"{lr_p:.4f}",
+                ],
+            }
+        )
+        print_latex_table(
+            fit_table,
+            caption="General CML fit and test statistics.",
+            label="tbl:cml-fit",
+            escape=False,
+        )
+
+        print(
+            r"\noindent\emph{Note:} $\beta^{dep}$ is listed because it is a true "
+            r"DGP parameter, but this specific CML estimator uses only purchase "
+            r"histories $(k,j,k,j)$ and $(k,k,j,j)$. Depreciation affects the "
+            r"no-purchase payoff, so it is not identified by these "
+            r"sufficient-statistic cells."
+        )
+    else:
+        print(rf"\noindent Only {len(cells)} usable cells; increase $N$ or recalibrate the DGP.")
+
+```

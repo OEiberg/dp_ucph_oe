@@ -513,7 +513,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dp-2026"
+name = "dp-ucph-oe"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
