@@ -26,7 +26,13 @@ format:
       text: |
         \usepackage{setspace}
         \usepackage{booktabs}
+        \usepackage{float}
         \setstretch{1.3}
+        \setlength{\floatsep}{6pt}
+        \setlength{\textfloatsep}{6pt}
+        \setlength{\intextsep}{6pt}
+        \setlength{\abovecaptionskip}{4pt}
+        \setlength{\belowcaptionskip}{2pt}
         \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{section}
         \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{subsection}
         \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{subsubsection}
@@ -65,8 +71,9 @@ from scipy.optimize import minimize
 from scipy.special import expit
 from scipy.stats import chi2, norm
 
-# Set seed for reproducibility (used in exercise 5)
-np.random.seed(2026)
+# Set seed for reproducibility.
+SEED = 1800
+rng = np.random.default_rng(SEED) # rng is the explicit random-number generator used everywhere below instead of relying on NumPy's global random state.
 ```
 \newpage
 
@@ -101,27 +108,30 @@ described in Sections 3–4 of the paper.
 # -----------------------------------------------------------------------------
 # Primitives and simulation helpers
 # -----------------------------------------------------------------------------
-# Main dimensions. `J` can be changed between 2 and 4 with the calibration below.
-J = 2
-N = 10000
-T = 40
-D_MAX = 5
-DELTA = 0.95
-MU = 5.0
-N_TYPES = 8
+J = 2                 # Main dimensions. `J` can be changed between 2 and 4 with the calibration below.
+N = 25000             # N is the number of consumers in the simulated panel.
+T = 52                # T is the number of calendar periods per consumer; for weekly data, T=52 is one year.
+D_MAX = 2             # D_MAX caps duration since last purchase, which implements Assumption 3.2's flat depreciation state in the simulation.
+DELTA = 0.95          # DELTA is the per-period discount factor used only when simulating forward-looking consumers.
+MU = 5.0              # MU is disposable income / outside-good resources before buying the product.
+N_TYPES = 8           # N_TYPES is the number of unobserved preference types used to approximate fixed-effect heterogeneity in the simulation.
+DEP_D_STAR = D_MAX    # DEP_D_STAR is the duration threshold used by the Section 3.3 depreciation CML histories.
+DEP_REQUIRE_CONSTANT_PROMOS = True # DEP_REQUIRE_CONSTANT_PROMOS enforces the paper's fixed-price condition in the no-purchase spell comparison.
+MIN_T_FOR_DEP_CML = 2 * DEP_D_STAR + 1 # The depreciation CML needs this many periods because it scans windows of length 2*d*+1.
 
 # Structural parameters used to generate the simulated data.
-gamma_true = 0.5
+gamma_true = 1.035
 
-# The arrays ending in `_all` store a four-brand baseline calibration. After the
-# dimension check below, we slice them down to the requested number of brands.
+# The arrays ending in `_all` store a four-brand baseline calibration. After the dimension check below, we slice them down to the requested number of brands.
 base_prices_all = np.array([1.85, 2.05, 2.20, 1.95])
+# promo_discount_all is the price reduction when each brand is on promotion.
 promo_discount_all = np.array([0.45, 0.45, 0.50, 0.40])
+# promo_entry is the probability that a non-promoted brand enters promotion next period.
 promo_entry = 0.18
+# promo_persist is the probability that a promoted brand remains promoted next period.
 promo_persist = 0.62
 
-# Depreciation costs apply when the consumer does not buy. Switching costs apply
-# when a positive purchase choice differs from the current last brand.
+# Depreciation costs apply when the consumer does not buy. Switching costs apply when a positive purchase choice differs from the current last brand.
 beta_dep_all = np.array([0.10, 0.13, 0.11, 0.14])
 beta_sc_all = np.array(
     [
@@ -135,13 +145,13 @@ beta_sc_all = np.array(
 if not 2 <= J <= len(base_prices_all):
     raise ValueError(f"J must be between 2 and {len(base_prices_all)} with the current calibration.")
 
+# Slice the four-brand calibration to the active number of brands so changing J does not create shape mismatches.
 base_prices = base_prices_all[:J]
 promo_discount = promo_discount_all[:J]
 beta_dep_true = beta_dep_all[:J]
 beta_sc_true = beta_sc_all[:J, :J]
 
-# The CML likelihood estimates gamma plus one symmetric switching-cost object
-# for each unordered brand pair (k, j).
+# The CML likelihood estimates gamma plus one symmetric switching-cost object for each unordered brand pair (k, j).
 n_pairs = J * (J - 1) // 2
 pair_to_index = {
     (k, j): idx
@@ -150,30 +160,34 @@ pair_to_index = {
     )
 }
 
-# Every promotion state is a binary vector indicating which brands are on sale.
-# With J brands there are 2^J possible promotion vectors.
+# Every promotion state is a binary vector indicating which brands are on sale. With J brands there are 2^J possible promotion vectors.
 promo_states = np.array(
     [[(s >> j) & 1 for j in range(J)] for s in range(2**J)],
     dtype=int,
 )
 
 
+# Define the known utility transformation from resources to utility.
 def h(consumption):
     """Utility from net-of-price resources."""
+    # The small floor prevents log(0) if a trial calibration makes net resources too small.
     return np.log(np.maximum(consumption, 1e-8))
 
 
+# Convert a binary promotion vector into the realized brand-price vector.
 def prices_from_promo(e_vec):
     # A promotion lowers the brand price by the brand-specific discount.
     return base_prices - promo_discount * e_vec
 
 
+# Compute h(MU-price) for one brand under the current promotion vector.
 def price_utility(e_vec, brand):
     # Brands are numbered 1,...,J in the economic model, while Python is 0-indexed.
     price = prices_from_promo(e_vec)[brand - 1]
     return h(MU - price)
 
 
+# Build the Markov transition matrix for all possible promotion states.
 def make_promo_transition():
     """Transition matrix over all binary promotion vectors."""
     n_states = len(promo_states)
@@ -190,8 +204,10 @@ def make_promo_transition():
 
 
 promo_transition = make_promo_transition()
+# promo_transition[s, sp] is the probability of moving from promotion vector s today to promotion vector sp tomorrow.
 
 
+# Evaluate deterministic flow utility before the Type-I Extreme Value shock.
 def utility(choice, last_brand, duration, e_vec, alpha):
     """Current-period deterministic payoff for a choice."""
     if choice == 0:
@@ -206,17 +222,16 @@ def utility(choice, last_brand, duration, e_vec, alpha):
     )
 
 
+# Solve the dynamic program for one fixed-effect preference type by value function iteration.
 def solve_consumer(alpha, tol=1e-9, max_iter=1_000):
     """Solve the finite-state Bellman equation for one preference type."""
     n_promo = len(promo_states)
 
-    # V[last brand, duration, promotion state] stores the ex-ante value before
-    # the consumer observes the Type-I Extreme Value choice shock.
+    # V[last brand, duration, promotion state] stores the ex-ante value before the consumer observes the Type-I Extreme Value choice shock.
     V = np.zeros((J, D_MAX + 1, n_promo))
 
     for _ in range(max_iter):
-        # Expected continuation values integrate over next period's promotion
-        # vector using the exogenous promotion transition matrix.
+        # Expected continuation values integrate over next period's promotion vector using the exogenous promotion transition matrix.
         expected_V = (V.reshape(J * (D_MAX + 1), n_promo) @ promo_transition.T).reshape(
             J, D_MAX + 1, n_promo
         )
@@ -234,8 +249,7 @@ def solve_consumer(alpha, tol=1e-9, max_iter=1_000):
                         l_idx, next_duration, s
                     ]
 
-                    # Choices 1,...,J are purchase choices: the chosen brand
-                    # becomes the new last brand and duration resets to zero.
+                    # Choices 1,...,J are purchase choices: the chosen brand becomes the new last brand and duration resets to zero.
                     for choice in range(1, J + 1):
                         values[choice] = utility(choice, last_brand, duration, e_vec, alpha) + DELTA * expected_V[
                             choice - 1, 0, s
@@ -253,12 +267,12 @@ def solve_consumer(alpha, tol=1e-9, max_iter=1_000):
     return V
 
 
+# Convert a solved value function into state-contingent multinomial logit choice probabilities.
 def choice_probabilities(V, alpha):
     """Choice probabilities implied by the solved value function."""
     n_promo = len(promo_states)
 
-    # Recompute choice-specific values at the fixed point, then transform them
-    # into multinomial logit probabilities.
+    # Recompute choice-specific values at the fixed point, then transform them into multinomial logit probabilities.
     expected_V = (V.reshape(J * (D_MAX + 1), n_promo) @ promo_transition.T).reshape(
         J, D_MAX + 1, n_promo
     )
@@ -283,35 +297,35 @@ def choice_probabilities(V, alpha):
     return probs
 
 
+# Simulate one step of the exogenous promotion process.
 def draw_next_promo_state(current_state):
-    return np.random.choice(len(promo_states), p=promo_transition[current_state])
+    # Draw next period's promotion vector from the Markov transition row for the current promotion state.
+    return rng.choice(len(promo_states), p=promo_transition[current_state])
 
 
+# Simulate a complete consumer-by-period panel from the dynamic model.
 def simulate_panel():
     """Simulate purchase histories from the solved dynamic model."""
-    # Instead of solving N separate dynamic programs, draw consumers from a
-    # small set of unobserved preference types and solve once per type.
-    alpha_types = np.random.normal(loc=0.0, scale=0.35, size=(N_TYPES, J))
-    type_id = np.random.choice(N_TYPES, size=N)
+    # Instead of solving N separate dynamic programs, draw consumers from a small set of unobserved preference types and solve once per type.
+    alpha_types = rng.normal(loc=0.0, scale=0.35, size=(N_TYPES, J))
+    type_id = rng.choice(N_TYPES, size=N)
     alpha_panel = alpha_types[type_id]
     policies = [choice_probabilities(solve_consumer(alpha_types[m]), alpha_types[m]) for m in range(N_TYPES)]
 
-    # Y is the observed choice. L, D, and E keep the simulated state variables
-    # used for diagnostics and for constructing the CML histories.
+    # Y is the observed choice. L, D, and E keep the simulated state variables used for diagnostics and for constructing the CML histories.
     Y = np.zeros((N, T), dtype=int)
     L = np.zeros((N, T), dtype=int)
     D = np.zeros((N, T), dtype=int)
     E = np.zeros((N, T, J), dtype=int)
 
-    last_brand = np.random.choice(np.arange(1, J + 1), size=N)
-    duration = np.random.randint(0, D_MAX + 1, size=N)
-    promo_state = np.random.choice(len(promo_states), size=N)
+    last_brand = rng.choice(np.arange(1, J + 1), size=N)
+    duration = rng.integers(0, D_MAX + 1, size=N)
+    promo_state = rng.choice(len(promo_states), size=N)
 
     for i in range(N):
         policy = policies[type_id[i]]
         for t in range(T):
-            # Record the state at the start of the period, then draw one choice
-            # from the solved policy for that state.
+            # Record the state at the start of the period, then draw one choice from the solved policy for that state.
             l_idx = last_brand[i] - 1
             d_idx = duration[i]
             s_idx = promo_state[i]
@@ -319,7 +333,7 @@ def simulate_panel():
             L[i, t] = last_brand[i]
             D[i, t] = duration[i]
             E[i, t] = promo_states[s_idx]
-            Y[i, t] = np.random.choice(np.arange(J + 1), p=policy[l_idx, d_idx, s_idx])
+            Y[i, t] = rng.choice(np.arange(J + 1), p=policy[l_idx, d_idx, s_idx])
 
             # Deterministic endogenous state transition implied by the choice.
             if Y[i, t] == 0:
@@ -333,48 +347,134 @@ def simulate_panel():
     return Y, L, D, E, alpha_panel
 
 
-def cml_pairs(Y, E):
-    """Build CML cells from (k,j,k,j) and (k,k,j,j) four-period histories."""
+# Extract purchase-only sufficient-statistic histories for gamma and switching-cost estimation.
+def cml_pairs(Y, L, E):
+    """Build CML cells from the paper's (k,j,k,j) and (k,k,j,j) histories."""
     cells = []
     for i in range(Y.shape[0]):
-        for t in range(Y.shape[1] - 3):
-            window = tuple(Y[i, t : t + 4])
+        for t in range(Y.shape[1] - 2):
+            initial_brand = L[i, t]
+            choices = tuple(Y[i, t : t + 3])
 
-            # The sufficient-statistic comparison uses four consecutive purchase
-            # occasions, so histories with no-purchase choices are skipped here.
-            if 0 in window:
+            # In the article's notation, the first element in (k,j,k,j) is the initial last brand, not an observed choice. Therefore we compare initial state k plus three subsequent choices.
+            if 0 in choices:
                 continue
 
-            # The current implementation follows the special case where the last
-            # two transitory price components are equal, which cancels nuisance
-            # continuation terms in the CML comparison.
-            if not np.array_equal(E[i, t + 2], E[i, t + 3]):
+            # The current implementation follows the special case where the last two transitory price components are equal, which cancels nuisance continuation terms in the CML comparison.
+            if not np.array_equal(E[i, t + 1], E[i, t + 2]):
                 continue
 
-            for k in range(1, J + 1):
-                for j in range(k + 1, J + 1):
-                    # A is the alternating history (k,j,k,j); B is the grouped
-                    # history (k,k,j,j). They have the same sufficient statistic
-                    # for fixed effects but differ in gamma and switching costs.
-                    if window == (k, j, k, j):
-                        is_a = True
-                    elif window == (k, k, j, j):
-                        is_a = False
-                    else:
-                        continue
+            for other_brand in range(1, J + 1):
+                if other_brand == initial_brand:
+                    continue
 
-                    # Price-utility contrast entering the A-versus-B logit.
-                    x_gamma = (
-                        price_utility(E[i, t + 1], j)
-                        + price_utility(E[i, t + 2], k)
-                        - price_utility(E[i, t + 1], k)
-                        - price_utility(E[i, t + 2], j)
-                    )
-                    cells.append((pair_to_index[(k, j)], x_gamma, is_a))
+                # A is initial k followed by choices (j,k,j). B is initial k followed by choices (k,j,j).
+                if choices == (other_brand, initial_brand, other_brand):
+                    is_a = True
+                elif choices == (initial_brand, other_brand, other_brand):
+                    is_a = False
+                else:
+                    continue
+
+                pair = tuple(sorted((initial_brand, other_brand)))
+
+                # Price-utility contrast entering the A-versus-B logit.
+                x_gamma = (
+                    price_utility(E[i, t], other_brand)
+                    + price_utility(E[i, t + 1], initial_brand)
+                    - price_utility(E[i, t], initial_brand)
+                    - price_utility(E[i, t + 1], other_brand)
+                )
+                cells.append((pair_to_index[pair], x_gamma, is_a))
 
     return cells
 
 
+# Extract no-purchase spell histories for the depreciation estimator in Section 3.3.
+def cml_depreciation_cells(Y, L, D, E, d_star=DEP_D_STAR, require_constant_promos=DEP_REQUIRE_CONSTANT_PROMOS):
+    """Build Section 3.3 no-purchase histories for depreciation rates."""
+    if d_star < 1:
+        raise ValueError("d_star must be at least 1.")
+
+    # In the paper's notation, the first j is the initial last brand, so observed windows have length 2*d*+1 rather than 2*d*+2.
+    n = d_star
+    window_len = 2 * n + 1
+    cells = []
+
+    for i in range(Y.shape[0]):
+        for t in range(Y.shape[1] - window_len + 1):
+            # The Section 3.3 history starts immediately after a purchase, which is represented by duration zero in this script.
+            if D[i, t] != 0:
+                continue
+
+            # Section 3.3 holds prices fixed over these histories. Here the transitory promotion vector is the only simulated price component, so we require it to be constant over the whole comparison window.
+            if require_constant_promos and not np.all(E[i, t : t + window_len] == E[i, t]):
+                continue
+
+            window = tuple(Y[i, t : t + window_len])
+            j = L[i, t]
+            # History A has the repeat purchase one period earlier than history B.
+            history_a = (0,) * (n - 1) + (j,) + (0,) * (n + 1)
+            history_b = (0,) * n + (j,) + (0,) * n
+
+            if window == history_a:
+                cells.append((j - 1, True))
+            elif window == history_b:
+                cells.append((j - 1, False))
+
+    return cells
+
+
+# Count depreciation A/B histories by brand to diagnose whether beta_dep can be estimated.
+def depreciation_cell_counts(cells):
+    """Count A and B depreciation histories by brand."""
+    counts = pd.DataFrame(
+        {
+            "Parameter": [rf"$\beta^{{dep}}_{{{j}}}$" for j in range(1, J + 1)],
+            "A histories": np.zeros(J, dtype=int),
+            "B histories": np.zeros(J, dtype=int),
+        }
+    )
+
+    for brand_idx, isA in cells:
+        if isA:
+            counts.loc[brand_idx, "A histories"] += 1
+        else:
+            counts.loc[brand_idx, "B histories"] += 1
+
+    counts["Total"] = counts["A histories"] + counts["B histories"]
+    return counts
+
+
+# Check the minimal no-separation condition for estimating all depreciation parameters.
+def can_estimate_depreciation(counts):
+    """Each brand needs both A and B histories to avoid complete separation."""
+    return bool(((counts["A histories"] > 0) & (counts["B histories"] > 0)).all())
+
+
+# Report identifying variation in the purchase-history CML sample.
+def purchase_cell_diagnostics(cells):
+    """Summarize identifying variation in the purchase-history CML cells."""
+    # x_gamma is the price-utility contrast; if it barely varies, gamma is weakly identified.
+    x_gamma = np.array([cell[1] for cell in cells])
+    # is_a records whether the observed history is the alternating A history rather than the grouped B history.
+    is_a = np.array([cell[2] for cell in cells], dtype=float)
+
+    if len(cells) == 0:
+        return {
+            "price_sd": np.nan,
+            "nonzero_share": np.nan,
+            "a_share": np.nan,
+        }
+
+    return {
+        "price_sd": x_gamma.std(ddof=1) if len(cells) > 1 else 0.0,
+        "nonzero_share": np.mean(np.abs(x_gamma) > 1e-10),
+        "a_share": is_a.mean(),
+    }
+
+
+# Evaluate the purchase-history conditional log-likelihood at a trial parameter vector.
 def cml_loglik(theta, cells):
     """Conditional log-likelihood for the A-versus-B history comparison."""
     loglik = 0.0
@@ -389,6 +489,19 @@ def cml_loglik(theta, cells):
     return loglik
 
 
+# Evaluate the depreciation conditional log-likelihood at a trial beta_dep vector.
+def cml_depreciation_loglik(beta_dep, cells):
+    """Conditional log-likelihood for depreciation spell histories."""
+    loglik = 0.0
+    for brand_idx, isA in cells:
+        # Equation (3.31) implies log P(A)-log P(B) = -beta_dep(j) under the duration-cap restriction.
+        diff = -beta_dep[brand_idx]
+        loglik += -np.logaddexp(0.0, -diff) if isA else -np.logaddexp(0.0, diff)
+
+    return loglik
+
+
+# Compute the analytic gradient of the purchase-history negative log-likelihood.
 def cml_negloglik_grad(theta, cells):
     """Gradient of the negative conditional log-likelihood."""
     grad = np.zeros_like(theta)
@@ -402,6 +515,19 @@ def cml_negloglik_grad(theta, cells):
     return grad
 
 
+# Compute the analytic gradient of the depreciation negative log-likelihood.
+def cml_depreciation_negloglik_grad(beta_dep, cells):
+    """Gradient of the negative depreciation conditional log-likelihood."""
+    grad = np.zeros_like(beta_dep)
+    for brand_idx, isA in cells:
+        # The A-versus-B logit index is -beta_dep(j).
+        diff = -beta_dep[brand_idx]
+        grad[brand_idx] += (float(isA) - expit(diff))
+
+    return grad
+
+
+# Compute observation-level purchase-history scores and Fisher information.
 def cml_score_and_info(theta, cells):
     """Outer-product scores and Hessian information for logit CML."""
     theta = np.asarray(theta)
@@ -425,19 +551,52 @@ def cml_score_and_info(theta, cells):
     return scores, info
 
 
+# Compute observation-level depreciation scores and Fisher information.
+def cml_depreciation_score_and_info(beta_dep, cells):
+    """Scores and information for the depreciation CML estimator."""
+    beta_dep = np.asarray(beta_dep)
+    scores = np.zeros((len(cells), beta_dep.size))
+    info = np.zeros((beta_dep.size, beta_dep.size))
+
+    for r, (brand_idx, isA) in enumerate(cells):
+        x = np.zeros(beta_dep.size)
+        x[brand_idx] = -1.0
+        diff = beta_dep @ x
+        p = expit(diff)
+        scores[r] = (float(isA) - p) * x
+        info += p * (1.0 - p) * np.outer(x, x)
+
+    return scores, info
+
+
+# Maximize the purchase-history CML objective for gamma and beta_tilde.
 def estimate_cml(cells):
     """Maximize the (globally concave) conditional log-likelihood (eq. 3.13)."""
+    # The purchase-history estimator has one gamma coefficient plus one beta_tilde coefficient per unordered brand pair.
     n_params = 1 + n_pairs
     res = minimize(
         lambda t: -cml_loglik(t, cells),
         jac=lambda t: cml_negloglik_grad(t, cells),
         x0=np.zeros(n_params),
-        method="BFGS",
-        options={"disp": False},
+        method="L-BFGS-B",
     )
     return res
 
 
+# Maximize the depreciation CML objective for beta_dep.
+def estimate_depreciation_cml(cells):
+    """Estimate beta_dep from the no-purchase spell histories."""
+    # The depreciation estimator has one beta_dep coefficient for each brand.
+    res = minimize(
+        lambda b: -cml_depreciation_loglik(b, cells),
+        jac=lambda b: cml_depreciation_negloglik_grad(b, cells),
+        x0=np.zeros(J),
+        method="L-BFGS-B",
+    )
+    return res
+
+
+# Turn purchase-history scores and information into model-based and robust covariance matrices.
 def cml_covariance(theta_hat, cells):
     """Return model-based and sandwich covariance matrices for theta_hat."""
     scores, info = cml_score_and_info(theta_hat, cells)
@@ -445,14 +604,27 @@ def cml_covariance(theta_hat, cells):
     info_inv = np.linalg.pinv(info)
     cov_model = info_inv
 
-    # The robust version allows for misspecification or remaining dependence in
-    # the constructed CML cells.
+    # The robust version allows for misspecification or remaining dependence in the constructed CML cells.
     cov_robust = info_inv @ meat @ info_inv
     return cov_model, cov_robust
 
 
+# Turn depreciation scores and information into model-based and robust covariance matrices.
+def cml_depreciation_covariance(beta_hat, cells):
+    """Return model-based and sandwich covariance matrices for beta_dep."""
+    scores, info = cml_depreciation_score_and_info(beta_hat, cells)
+    meat = scores.T @ scores
+    info_inv = np.linalg.pinv(info)
+    cov_model = info_inv
+    # Use the same sandwich logic as the purchase-history estimator.
+    cov_robust = info_inv @ meat @ info_inv
+    return cov_model, cov_robust
+
+
+# Build the LaTeX-ready table for gamma and beta_tilde estimates.
 def make_estimate_table(theta_hat, cov, btil_true):
     """Create parameter table with true values, estimates, and inference."""
+    # The table compares the identified purchase-history parameters to their true simulation values.
     se = np.sqrt(np.diag(cov))
     true = np.r_[gamma_true, btil_true]
     names = [r"$\gamma$"]
@@ -468,7 +640,7 @@ def make_estimate_table(theta_hat, cov, btil_true):
             {
                 "Parameter": name,
                 "True": true_value,
-                "CML estimate": estimate,
+                "CML": estimate,
                 "Std. err.": std_err,
                 "z-stat": z_stat,
                 "p-value": p_value,
@@ -478,25 +650,37 @@ def make_estimate_table(theta_hat, cov, btil_true):
             }
         )
 
-    # beta_dep is present in the DGP, but not identified by this CML likelihood.
-    for j, true_value in enumerate(beta_dep_true, start=1):
+    return pd.DataFrame(rows)
+
+
+# Build the LaTeX-ready table for beta_dep estimates.
+def make_depreciation_table(beta_hat, cov):
+    """Create parameter table for beta_dep estimates."""
+    # The table compares the Section 3.3 depreciation estimates to their true simulation values.
+    se = np.sqrt(np.diag(cov))
+    rows = []
+
+    for j, (true_value, estimate, std_err) in enumerate(zip(beta_dep_true, beta_hat, se), start=1):
+        z_stat = estimate / std_err if std_err > 0 else np.nan
+        p_value = 2.0 * (1.0 - norm.cdf(abs(z_stat))) if np.isfinite(z_stat) else np.nan
         rows.append(
             {
                 "Parameter": rf"$\beta^{{dep}}_{{{j}}}$",
                 "True": true_value,
-                "CML estimate": np.nan,
-                "Std. err.": np.nan,
-                "z-stat": np.nan,
-                "p-value": np.nan,
-                r"CI 2.5\%": np.nan,
-                r"CI 97.5\%": np.nan,
-                "Bias": np.nan,
+                "CML": estimate,
+                "Std. err.": std_err,
+                "z-stat": z_stat,
+                "p-value": p_value,
+                r"CI 2.5\%": estimate - 1.96 * std_err,
+                r"CI 97.5\%": estimate + 1.96 * std_err,
+                "Bias": estimate - true_value,
             }
         )
 
     return pd.DataFrame(rows)
 
 
+# Compute likelihood-ratio fit statistics for the purchase-history CML estimator.
 def lr_test(theta_hat, cells):
     """Likelihood-ratio test of all identified CML coefficients equal to zero."""
     ll_full = cml_loglik(theta_hat, cells)
@@ -508,21 +692,22 @@ def lr_test(theta_hat, cells):
     return ll_full, ll_null, lr_stat, df, p_value
 
 
-def print_latex_table(data, caption, label, escape=True):
+# Print a pandas DataFrame as a LaTeX table that Quarto can render directly.
+def print_latex_table(data, caption, label, escape=True, position="H"):
     """Print a pandas table as raw LaTeX for Quarto."""
-    # Quarto receives this chunk as `output: asis`, so the LaTeX is rendered
-    # directly in the PDF rather than printed as console output.
-    print(
-        data.to_latex(
-            index=False,
-            escape=escape,
-            na_rep="",
-            float_format=lambda value: f"{value:.4f}",
-            caption=caption,
-            label=label,
-            position="!htbp",
-        )
+    # Quarto receives this chunk as `output: asis`, so the LaTeX is rendered directly in the PDF rather than printed as console output.
+    # The position argument is kept for backwards compatibility with older calls, but compact PDF output uses H placement.
+    latex = data.to_latex(
+        index=False,
+        escape=escape,
+        na_rep="",
+        float_format=lambda value: f"{value:.4f}",
+        caption=caption,
+        label=label,
+        position="H",
     )
+    latex = latex.replace(r"\begin{table}[H]", r"\begin{table}[H]" + "\n" + r"\centering")
+    print(latex)
     print()
 
 
@@ -530,8 +715,15 @@ def print_latex_table(data, caption, label, escape=True):
 # Run the pipeline: simulate, build sufficient-statistic cells, estimate, report
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    # Step 1: simulate a panel from the dynamic model using the solved policy rules.
     Y, L, D, E, alpha_panel = simulate_panel()
-    cells = cml_pairs(Y, E)
+    # Step 2: extract the purchase-history CML cells for gamma and beta_tilde.
+    cells = cml_pairs(Y, L, E)
+    # Step 3: summarize whether those cells contain enough price variation to identify gamma.
+    cell_diag = purchase_cell_diagnostics(cells)
+    # Step 4: extract no-purchase spell cells for beta_dep and count whether each brand has usable A and B histories.
+    dep_cells = cml_depreciation_cells(Y, L, D, E)
+    dep_counts = depreciation_cell_counts(dep_cells)
 
     # True symmetric switching costs: beta_tilde(k,j) = beta_sc(k,j) + beta_sc(j,k).
     btil_true = np.array(
@@ -543,17 +735,27 @@ if __name__ == "__main__":
     )
 
     if len(cells) >= 4:
+        # Step 5: estimate gamma and beta_tilde from the purchase-history conditional likelihood.
         res = estimate_cml(cells)
         theta_hat = res.x
         cov_model, cov_robust = cml_covariance(theta_hat, cells)
         table = make_estimate_table(theta_hat, cov_robust, btil_true)
 
+        # Step 6: estimate beta_dep only if every brand has both A and B no-purchase spell histories.
+        dep_res = estimate_depreciation_cml(dep_cells) if can_estimate_depreciation(dep_counts) else None
+        if dep_res is not None:
+            beta_dep_hat = dep_res.x
+            dep_cov_model, dep_cov_robust = cml_depreciation_covariance(beta_dep_hat, dep_cells)
+            dep_table = make_depreciation_table(beta_dep_hat, dep_cov_robust)
+
+        # Step 7: compute likelihood-fit diagnostics for the purchase-history CML estimator.
         ll_full, ll_null, lr_stat, lr_df, lr_p = lr_test(theta_hat, cells)
         n_params = theta_hat.size
         aic = 2 * n_params - 2 * ll_full
         bic = np.log(len(cells)) * n_params - 2 * ll_full
         pseudo_r2 = 1.0 - ll_full / ll_null if ll_null != 0 else np.nan
 
+        # Step 8: build the LaTeX summary table that explains the simulated sample and identifying variation.
         alpha_sd = ", ".join(f"{value:.3f}" for value in alpha_panel.std(axis=0, ddof=1))
         summary_table = pd.DataFrame(
             {
@@ -564,8 +766,15 @@ if __name__ == "__main__":
                     "Observed purchases",
                     "Purchase rate",
                     r"Sufficient-statistic cells with $e_3=e_4$",
+                    r"Price-contrast std. dev.",
+                    r"Nonzero price-contrast share",
+                    r"Alternating-history share",
+                    r"Depreciation spell cells",
+                    r"Depreciation duration cap $d^*$",
+                    r"Minimum $T$ for depreciation CML",
+                    r"Constant-promotion spell restriction",
                     "Alpha FE sample std. dev.",
-                    "Optimizer converged",
+                    "Optimizer converged?",
                     "Optimizer iterations",
                 ],
                 "Value": [
@@ -573,10 +782,17 @@ if __name__ == "__main__":
                     f"{T}",
                     f"{J}",
                     f"{(Y > 0).sum()} of {Y.size}",
-                    f"{(Y > 0).mean():.3%}".replace("%", r"\%"),
+                    f"{(Y > 0).mean():.1%}".replace("%", r"\%"),
                     f"{len(cells)}",
+                    f"{cell_diag['price_sd']:.3f}",
+                    f"{cell_diag['nonzero_share']:.1%}".replace("%", r"\%"),
+                    f"{cell_diag['a_share']:.1%}".replace("%", r"\%"),
+                    f"{len(dep_cells)}",
+                    f"{DEP_D_STAR}",
+                    f"{MIN_T_FOR_DEP_CML}",
+                    f"{DEP_REQUIRE_CONSTANT_PROMOS}",
                     alpha_sd,
-                    f"{res.success} ({res.message})",
+                    "Yes" if res.success else "No",
                     f"{res.nit}",
                 ],
             }
@@ -588,6 +804,7 @@ if __name__ == "__main__":
             escape=False,
         )
 
+        # Step 9: print the purchase-history parameter table.
         print_latex_table(
             table,
             caption="CML parameter estimates.",
@@ -595,6 +812,30 @@ if __name__ == "__main__":
             escape=False,
         )
 
+        # Step 10: print depreciation estimates when available; otherwise print counts that explain why estimation was skipped.
+        if dep_res is not None:
+            print_latex_table(
+                dep_table,
+                caption="CML depreciation estimates from no-purchase spell histories.",
+                label="tbl:cml-depreciation",
+                escape=False,
+            )
+        else:
+            print_latex_table(
+                dep_counts,
+                caption="Depreciation spell-history counts by brand.",
+                label="tbl:cml-depreciation-counts",
+                escape=False,
+            )
+            print(
+                rf"\noindent\emph{{Depreciation CML not estimated:}} only {len(dep_cells)} "
+                rf"usable no-purchase spell cells were found. Each brand needs at least one "
+                rf"$A=(j,0^{{d^*-1}},j,0^{{d^*+1}})$ history and one "
+                rf"$B=(j,0^{{d^*}},j,0^{{d^*}})$ history."
+            )
+            print()
+
+        # Step 11: print general CML fit statistics for the purchase-history estimator.
         fit_table = pd.DataFrame(
             {
                 "Statistic": [
@@ -608,14 +849,14 @@ if __name__ == "__main__":
                     "LR test p-value",
                 ],
                 "Value": [
-                    f"{ll_full:.4f}",
-                    f"{ll_null:.4f}",
-                    f"{pseudo_r2:.4f}",
-                    f"{aic:.4f}",
-                    f"{bic:.4f}",
-                    f"{lr_stat:.4f}",
+                    f"{ll_full:.3f}",
+                    f"{ll_null:.3f}",
+                    f"{pseudo_r2:.3f}",
+                    f"{aic:.3f}",
+                    f"{bic:.3f}",
+                    f"{lr_stat:.3f}",
                     f"{lr_df:d}",
-                    f"{lr_p:.4f}",
+                    f"{lr_p:.3f}",
                 ],
             }
         )
@@ -626,13 +867,23 @@ if __name__ == "__main__":
             escape=False,
         )
 
-        print(
-            r"\noindent\emph{Note:} $\beta^{dep}$ is listed because it is a true "
-            r"DGP parameter, but this specific CML estimator uses only purchase "
-            r"histories $(k,j,k,j)$ and $(k,k,j,j)$. Depreciation affects the "
-            r"no-purchase payoff, so it is not identified by these "
-            r"sufficient-statistic cells."
-        )
+        if dep_res is not None:
+            print(
+                r"\noindent\emph{Note:} The first CML table uses purchase histories "
+                r"$(k,j,k,j)$ and $(k,k,j,j)$ to estimate $\gamma$ and "
+                r"$\tilde{\beta}_{k,j}$. The depreciation table uses the no-purchase "
+                r"spell histories from Section 3.3, imposing the simulated duration "
+                rf"cap $d^*={DEP_D_STAR}$ as the point where the depreciation state is flat."
+            )
+        else:
+            print(
+                r"\noindent\emph{Note:} The first CML table uses purchase histories "
+                r"$(k,j,k,j)$ and $(k,k,j,j)$ to estimate $\gamma$ and "
+                r"$\tilde{\beta}_{k,j}$. The depreciation estimator has also been "
+                r"implemented using the no-purchase spell histories from Section 3.3, "
+                r"but the simulated panel does not contain enough qualifying spell "
+                rf"histories under $d^*={DEP_D_STAR}$ and the current price-matching restriction."
+            )
     else:
         print(rf"\noindent Only {len(cells)} usable cells; increase $N$ or recalibrate the DGP.")
 
