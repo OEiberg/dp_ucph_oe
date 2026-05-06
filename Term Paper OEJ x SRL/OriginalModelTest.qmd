@@ -109,30 +109,35 @@ described in Sections 3–4 of the paper.
 # Primitives and simulation helpers
 # -----------------------------------------------------------------------------
 J = 2                 # Main dimensions. `J` can be changed between 2 and 4 with the calibration below.
-N = 25000             # N is the number of consumers in the simulated panel.
+N = 30000             # N is the number of consumers in the simulated panel.
 T = 52                # T is the number of calendar periods per consumer; for weekly data, T=52 is one year.
 D_MAX = 2             # D_MAX caps duration since last purchase, which implements Assumption 3.2's flat depreciation state in the simulation.
 DELTA = 0.95          # DELTA is the per-period discount factor used only when simulating forward-looking consumers.
-MU = 5.0              # MU is disposable income / outside-good resources before buying the product.
+MU = 15               # MU is disposable income / outside-good resources before buying the product.
 N_TYPES = 8           # N_TYPES is the number of unobserved preference types used to approximate fixed-effect heterogeneity in the simulation.
 DEP_D_STAR = D_MAX    # DEP_D_STAR is the duration threshold used by the Section 3.3 depreciation CML histories.
 DEP_REQUIRE_CONSTANT_PROMOS = True # DEP_REQUIRE_CONSTANT_PROMOS enforces the paper's fixed-price condition in the no-purchase spell comparison.
 MIN_T_FOR_DEP_CML = 2 * DEP_D_STAR + 1 # The depreciation CML needs this many periods because it scans windows of length 2*d*+1.
+RUN_MONTE_CARLO = True # RUN_MONTE_CARLO controls whether the script also repeats the DGP and estimation many times to summarize finite-sample performance.
+MC_REPS = 10           # MC_REPS is the number of independently simulated panels in the Monte Carlo experiment.
+MC_N = 30000            # MC_N is the number of consumers per Monte Carlo replication; keep this below N if render time becomes too long.
+MC_T = T               # MC_T is the number of periods per Monte Carlo replication, usually matched to the empirical horizon.
+MC_SEED_START = SEED + 10000 # MC_SEED_START makes each Monte Carlo replication reproducible while keeping it separate from the single reported simulation.
 
 # Structural parameters used to generate the simulated data.
 gamma_true = 1.035
 
 # The arrays ending in `_all` store a four-brand baseline calibration. After the dimension check below, we slice them down to the requested number of brands.
-base_prices_all = np.array([1.85, 2.05, 2.20, 1.95])
+base_prices_all = np.array([10, 15, 20, 25])
 # promo_discount_all is the price reduction when each brand is on promotion.
-promo_discount_all = np.array([0.45, 0.45, 0.50, 0.40])
+promo_discount_all = np.array([2, 2, 2, 2])
 # promo_entry is the probability that a non-promoted brand enters promotion next period.
 promo_entry = 0.18
 # promo_persist is the probability that a promoted brand remains promoted next period.
 promo_persist = 0.62
 
 # Depreciation costs apply when the consumer does not buy. Switching costs apply when a positive purchase choice differs from the current last brand.
-beta_dep_all = np.array([0.10, 0.13, 0.11, 0.14])
+beta_dep_all = np.array([0.25, 0.25, 0.11, 0.14])
 beta_sc_all = np.array(
     [
         [0.00, 0.55, 0.70, 0.60],
@@ -298,33 +303,33 @@ def choice_probabilities(V, alpha):
 
 
 # Simulate one step of the exogenous promotion process.
-def draw_next_promo_state(current_state):
+def draw_next_promo_state(current_state, rng_obj):
     # Draw next period's promotion vector from the Markov transition row for the current promotion state.
-    return rng.choice(len(promo_states), p=promo_transition[current_state])
+    return rng_obj.choice(len(promo_states), p=promo_transition[current_state])
 
 
 # Simulate a complete consumer-by-period panel from the dynamic model.
-def simulate_panel():
+def simulate_panel(n_consumers=N, n_periods=T, rng_obj=rng):
     """Simulate purchase histories from the solved dynamic model."""
     # Instead of solving N separate dynamic programs, draw consumers from a small set of unobserved preference types and solve once per type.
-    alpha_types = rng.normal(loc=0.0, scale=0.35, size=(N_TYPES, J))
-    type_id = rng.choice(N_TYPES, size=N)
+    alpha_types = rng_obj.normal(loc=0.0, scale=0.35, size=(N_TYPES, J))
+    type_id = rng_obj.choice(N_TYPES, size=n_consumers)
     alpha_panel = alpha_types[type_id]
     policies = [choice_probabilities(solve_consumer(alpha_types[m]), alpha_types[m]) for m in range(N_TYPES)]
 
     # Y is the observed choice. L, D, and E keep the simulated state variables used for diagnostics and for constructing the CML histories.
-    Y = np.zeros((N, T), dtype=int)
-    L = np.zeros((N, T), dtype=int)
-    D = np.zeros((N, T), dtype=int)
-    E = np.zeros((N, T, J), dtype=int)
+    Y = np.zeros((n_consumers, n_periods), dtype=int)
+    L = np.zeros((n_consumers, n_periods), dtype=int)
+    D = np.zeros((n_consumers, n_periods), dtype=int)
+    E = np.zeros((n_consumers, n_periods, J), dtype=int)
 
-    last_brand = rng.choice(np.arange(1, J + 1), size=N)
-    duration = rng.integers(0, D_MAX + 1, size=N)
-    promo_state = rng.choice(len(promo_states), size=N)
+    last_brand = rng_obj.choice(np.arange(1, J + 1), size=n_consumers)
+    duration = rng_obj.integers(0, D_MAX + 1, size=n_consumers)
+    promo_state = rng_obj.choice(len(promo_states), size=n_consumers)
 
-    for i in range(N):
+    for i in range(n_consumers):
         policy = policies[type_id[i]]
-        for t in range(T):
+        for t in range(n_periods):
             # Record the state at the start of the period, then draw one choice from the solved policy for that state.
             l_idx = last_brand[i] - 1
             d_idx = duration[i]
@@ -333,7 +338,7 @@ def simulate_panel():
             L[i, t] = last_brand[i]
             D[i, t] = duration[i]
             E[i, t] = promo_states[s_idx]
-            Y[i, t] = rng.choice(np.arange(J + 1), p=policy[l_idx, d_idx, s_idx])
+            Y[i, t] = rng_obj.choice(np.arange(J + 1), p=policy[l_idx, d_idx, s_idx])
 
             # Deterministic endogenous state transition implied by the choice.
             if Y[i, t] == 0:
@@ -342,7 +347,7 @@ def simulate_panel():
                 last_brand[i] = Y[i, t]
                 duration[i] = 0
 
-            promo_state[i] = draw_next_promo_state(s_idx)
+            promo_state[i] = draw_next_promo_state(s_idx, rng_obj)
 
     return Y, L, D, E, alpha_panel
 
@@ -621,16 +626,35 @@ def cml_depreciation_covariance(beta_hat, cells):
     return cov_model, cov_robust
 
 
+# Create the true beta_tilde vector implied by the asymmetric switching-cost matrix.
+def btilde_true_values():
+    """Return beta_tilde(k,j)=beta_sc(k,j)+beta_sc(j,k) for all unordered brand pairs."""
+    return np.array(
+        [
+            beta_sc_true[k - 1, j - 1] + beta_sc_true[j - 1, k - 1]
+            for k in range(1, J + 1)
+            for j in range(k + 1, J + 1)
+        ]
+    )
+
+
+# Create LaTeX parameter names for the purchase-history estimator.
+def purchase_parameter_names():
+    """Return names for gamma and the beta_tilde parameters."""
+    names = [r"$\gamma$"]
+    for k in range(1, J + 1):
+        for j in range(k + 1, J + 1):
+            names.append(rf"$\tilde{{\beta}}_{{{k},{j}}}$")
+    return names
+
+
 # Build the LaTeX-ready table for gamma and beta_tilde estimates.
 def make_estimate_table(theta_hat, cov, btil_true):
     """Create parameter table with true values, estimates, and inference."""
     # The table compares the identified purchase-history parameters to their true simulation values.
     se = np.sqrt(np.diag(cov))
     true = np.r_[gamma_true, btil_true]
-    names = [r"$\gamma$"]
-    for k in range(1, J + 1):
-        for j in range(k + 1, J + 1):
-            names.append(rf"$\tilde{{\beta}}_{{{k},{j}}}$")
+    names = purchase_parameter_names()
 
     rows = []
     for name, true_value, estimate, std_err in zip(names, true, theta_hat, se):
@@ -680,6 +704,206 @@ def make_depreciation_table(beta_hat, cov):
     return pd.DataFrame(rows)
 
 
+# Estimate one simulated panel and return parameter estimates in long format for the Monte Carlo experiment.
+def estimate_panel_for_monte_carlo(Y, L, D, E, replication, cells=None, dep_cells=None, dep_counts=None):
+    """Estimate one Monte Carlo panel and return one row per parameter."""
+    rows = []
+    cells = cml_pairs(Y, L, E) if cells is None else cells
+    dep_cells = cml_depreciation_cells(Y, L, D, E) if dep_cells is None else dep_cells
+    dep_counts = depreciation_cell_counts(dep_cells) if dep_counts is None else dep_counts
+    meta = {
+        "Purchase optimizer converged": False,
+        "Purchase optimizer iterations": np.nan,
+        "Depreciation estimator available": False,
+        "Depreciation optimizer converged": False,
+        "Depreciation optimizer iterations": np.nan,
+    }
+
+    if len(cells) >= 4:
+        purchase_res = estimate_cml(cells)
+        meta["Purchase optimizer converged"] = purchase_res.success
+        meta["Purchase optimizer iterations"] = purchase_res.nit
+        true_values = np.r_[gamma_true, btilde_true_values()]
+        for name, true_value, estimate in zip(purchase_parameter_names(), true_values, purchase_res.x):
+            rows.append(
+                {
+                    "Replication": replication,
+                    "Parameter": name,
+                    "True": true_value,
+                    "CML": estimate,
+                    "Bias": estimate - true_value,
+                    "Squared error": (estimate - true_value) ** 2,
+                    "Relevant cells": len(cells),
+                    "Estimated": purchase_res.success,
+                }
+            )
+
+    if can_estimate_depreciation(dep_counts):
+        dep_res = estimate_depreciation_cml(dep_cells)
+        meta["Depreciation estimator available"] = True
+        meta["Depreciation optimizer converged"] = dep_res.success
+        meta["Depreciation optimizer iterations"] = dep_res.nit
+        for j, (true_value, estimate) in enumerate(zip(beta_dep_true, dep_res.x), start=1):
+            rows.append(
+                {
+                    "Replication": replication,
+                    "Parameter": rf"$\beta^{{dep}}_{{{j}}}$",
+                    "True": true_value,
+                    "CML": estimate,
+                    "Bias": estimate - true_value,
+                    "Squared error": (estimate - true_value) ** 2,
+                    "Relevant cells": len(dep_cells),
+                    "Estimated": dep_res.success,
+                }
+            )
+
+    return rows, meta
+
+
+# Repeat the DGP and estimators over independently seeded simulated panels.
+def run_monte_carlo(n_rep=MC_REPS, n_consumers=MC_N, n_periods=MC_T, seed_start=MC_SEED_START):
+    """Run the Monte Carlo experiment for the current DGP calibration."""
+    rows = []
+    diagnostics = []
+    for rep in range(1, n_rep + 1):
+        # Each replication uses its own generator so the Monte Carlo is reproducible and independent of the single reported simulation above.
+        rep_rng = np.random.default_rng(seed_start + rep)
+        Y_rep, L_rep, D_rep, E_rep, alpha_panel_rep = simulate_panel(n_consumers=n_consumers, n_periods=n_periods, rng_obj=rep_rng)
+        cells_rep = cml_pairs(Y_rep, L_rep, E_rep)
+        dep_cells_rep = cml_depreciation_cells(Y_rep, L_rep, D_rep, E_rep)
+        dep_counts_rep = depreciation_cell_counts(dep_cells_rep)
+        cell_diag_rep = purchase_cell_diagnostics(cells_rep)
+        rep_rows, rep_meta = estimate_panel_for_monte_carlo(Y_rep, L_rep, D_rep, E_rep, rep, cells_rep, dep_cells_rep, dep_counts_rep)
+        rows.extend(rep_rows)
+
+        # Store one row of DGP and CML-sample diagnostics for the Monte Carlo summary table.
+        diagnostic_row = {
+            "Replication": rep,
+            "Observed purchases": (Y_rep > 0).sum(),
+            "Total choices": Y_rep.size,
+            "Purchase rate": (Y_rep > 0).mean(),
+            "Purchase cells": len(cells_rep),
+            "Price-contrast std. dev.": cell_diag_rep["price_sd"],
+            "Nonzero price-contrast share": cell_diag_rep["nonzero_share"],
+            "Alternating-history share": cell_diag_rep["a_share"],
+            "Depreciation spell cells": len(dep_cells_rep),
+            **rep_meta,
+        }
+        for j, value in enumerate(alpha_panel_rep.std(axis=0, ddof=1), start=1):
+            diagnostic_row[f"Alpha FE sample std. dev. {j}"] = value
+        diagnostics.append(diagnostic_row)
+
+    return pd.DataFrame(rows), pd.DataFrame(diagnostics)
+
+
+# Collapse Monte Carlo replication diagnostics into a Table-1-style summary.
+def make_monte_carlo_dgp_table(mc_diagnostics):
+    """Summarize the simulated Monte Carlo panels and their CML identifying variation."""
+    if mc_diagnostics.empty:
+        return pd.DataFrame({"Statistic": ["Monte Carlo replications"], "Value": ["0"]})
+
+    alpha_cols = [col for col in mc_diagnostics.columns if col.startswith("Alpha FE sample std. dev.")]
+    alpha_sd = ", ".join(f"{mc_diagnostics[col].mean():.3f}" for col in alpha_cols)
+    total_choices = int(mc_diagnostics["Total choices"].iloc[0])
+
+    return pd.DataFrame(
+        {
+            "Statistic": [
+                "Replications",
+                "Consumers per replication",
+                "Periods per replication",
+                "Brands",
+                "Mean observed purchases",
+                "Mean purchase rate",
+                r"Mean sufficient-statistic cells with $e_3=e_4$",
+                r"Mean price-contrast std. dev.",
+                r"Mean nonzero price-contrast share",
+                r"Mean alternating-history share",
+                r"Mean depreciation spell cells",
+                r"Depreciation duration cap $d^*$",
+                r"Minimum $T$ for depreciation CML",
+                r"Constant-promotion spell restriction",
+                "Mean alpha FE sample std. dev.",
+                "Purchase optimizer convergence share",
+                "Mean purchase optimizer iterations",
+                "Depreciation estimator availability share",
+                "Depreciation optimizer convergence share",
+                "Mean depreciation optimizer iterations",
+            ],
+            "Value": [
+                f"{len(mc_diagnostics)}",
+                f"{MC_N}",
+                f"{MC_T}",
+                f"{J}",
+                f"{mc_diagnostics['Observed purchases'].mean():.1f} of {total_choices}",
+                f"{mc_diagnostics['Purchase rate'].mean():.1%}".replace("%", r"\%"),
+                f"{mc_diagnostics['Purchase cells'].mean():.1f}",
+                f"{mc_diagnostics['Price-contrast std. dev.'].mean():.3f}",
+                f"{mc_diagnostics['Nonzero price-contrast share'].mean():.1%}".replace("%", r"\%"),
+                f"{mc_diagnostics['Alternating-history share'].mean():.1%}".replace("%", r"\%"),
+                f"{mc_diagnostics['Depreciation spell cells'].mean():.1f}",
+                f"{DEP_D_STAR}",
+                f"{MIN_T_FOR_DEP_CML}",
+                f"{DEP_REQUIRE_CONSTANT_PROMOS}",
+                alpha_sd,
+                f"{mc_diagnostics['Purchase optimizer converged'].mean():.1%}".replace("%", r"\%"),
+                f"{mc_diagnostics['Purchase optimizer iterations'].mean():.1f}",
+                f"{mc_diagnostics['Depreciation estimator available'].mean():.1%}".replace("%", r"\%"),
+                f"{mc_diagnostics['Depreciation optimizer converged'].mean():.1%}".replace("%", r"\%"),
+                f"{mc_diagnostics['Depreciation optimizer iterations'].mean():.1f}",
+            ],
+        }
+    )
+
+
+# Collapse the long Monte Carlo results into a publication-style performance table.
+def make_monte_carlo_table(mc_results):
+    """Summarize Monte Carlo estimates using the same core columns as the single-panel estimate tables."""
+    if mc_results.empty:
+        return pd.DataFrame(
+            {
+                "Parameter": ["No estimates"],
+                "True": [np.nan],
+                "CML": [np.nan],
+                "Std. err.": [np.nan],
+                "z-stat": [np.nan],
+                "p-value": [np.nan],
+                r"CI 2.5\%": [np.nan],
+                r"CI 97.5\%": [np.nan],
+                "Bias": [np.nan],
+                "Reps.": [0],
+                "RMSE": [np.nan],
+                "Mean cells": [np.nan],
+            }
+        )
+
+    rows = []
+    for (parameter, true_value), group in mc_results.groupby(["Parameter", "True"], sort=False):
+        estimates = group["CML"].to_numpy()
+        mean_estimate = estimates.mean()
+        std_err = estimates.std(ddof=1) if len(estimates) > 1 else 0.0
+        z_stat = mean_estimate / std_err if std_err > 0 else np.nan
+        p_value = 2.0 * (1.0 - norm.cdf(abs(z_stat))) if np.isfinite(z_stat) else np.nan
+        rows.append(
+            {
+                "Parameter": parameter,
+                "True": true_value,
+                "CML": mean_estimate,
+                "Std. err.": std_err,
+                "z-stat": z_stat,
+                "p-value": p_value,
+                r"CI 2.5\%": mean_estimate - 1.96 * std_err,
+                r"CI 97.5\%": mean_estimate + 1.96 * std_err,
+                "Bias": mean_estimate - true_value,
+                "Reps.": int(len(group)),
+                "RMSE": np.sqrt(group["Squared error"].mean()),
+                "Mean cells": group["Relevant cells"].mean(),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 # Compute likelihood-ratio fit statistics for the purchase-history CML estimator.
 def lr_test(theta_hat, cells):
     """Likelihood-ratio test of all identified CML coefficients equal to zero."""
@@ -701,7 +925,7 @@ def print_latex_table(data, caption, label, escape=True, position="H"):
         index=False,
         escape=escape,
         na_rep="",
-        float_format=lambda value: f"{value:.4f}",
+        float_format=lambda value: f"{value:.3f}",
         caption=caption,
         label=label,
         position="H",
@@ -726,13 +950,7 @@ if __name__ == "__main__":
     dep_counts = depreciation_cell_counts(dep_cells)
 
     # True symmetric switching costs: beta_tilde(k,j) = beta_sc(k,j) + beta_sc(j,k).
-    btil_true = np.array(
-        [
-            beta_sc_true[k - 1, j - 1] + beta_sc_true[j - 1, k - 1]
-            for k in range(1, J + 1)
-            for j in range(k + 1, J + 1)
-        ]
-    )
+    btil_true = btilde_true_values()
 
     if len(cells) >= 4:
         # Step 5: estimate gamma and beta_tilde from the purchase-history conditional likelihood.
@@ -776,6 +994,10 @@ if __name__ == "__main__":
                     "Alpha FE sample std. dev.",
                     "Optimizer converged?",
                     "Optimizer iterations",
+                    "Monte Carlo enabled?",
+                    "Monte Carlo replications",
+                    "Monte Carlo consumers",
+                    "Monte Carlo periods",
                 ],
                 "Value": [
                     f"{N}",
@@ -794,6 +1016,10 @@ if __name__ == "__main__":
                     alpha_sd,
                     "Yes" if res.success else "No",
                     f"{res.nit}",
+                    "Yes" if RUN_MONTE_CARLO else "No",
+                    f"{MC_REPS}",
+                    f"{MC_N}",
+                    f"{MC_T}",
                 ],
             }
         )
@@ -866,6 +1092,24 @@ if __name__ == "__main__":
             label="tbl:cml-fit",
             escape=False,
         )
+
+        # Step 12: optionally rerun the full DGP and estimator many times to summarize Monte Carlo performance.
+        if RUN_MONTE_CARLO:
+            mc_results, mc_diagnostics = run_monte_carlo()
+            mc_dgp_table = make_monte_carlo_dgp_table(mc_diagnostics)
+            mc_table = make_monte_carlo_table(mc_results)
+            print_latex_table(
+                mc_dgp_table,
+                caption=rf"Monte Carlo simulation and CML estimation summary across {MC_REPS} replications.",
+                label="tbl:mc-dgp-summary",
+                escape=False,
+            )
+            print_latex_table(
+                mc_table,
+                caption=rf"Monte Carlo performance summary across {MC_REPS} replications with $N={MC_N}$ and $T={MC_T}$.",
+                label="tbl:mc-summary",
+                escape=False,
+            )
 
         if dep_res is not None:
             print(
