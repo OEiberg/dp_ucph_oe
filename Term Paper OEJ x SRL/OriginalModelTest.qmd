@@ -70,6 +70,14 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.special import expit
 from scipy.stats import chi2, norm
+#from pathlib import Path
+#import os
+
+# Path to the Excel file containing the data
+#PROJECT_ROOT = Path(os.environ.get("QUARTO_PROJECT_DIR", Path.cwd())).resolve()
+#DATA_PATH = PROJECT_ROOT / "Data"
+#SCANNER_DATA = DATA_PATH / "panel_with_state.csv"
+SCANNER_DATA = "/Users/olivereiberg/Documents/Economics/MA/2_Semester/Data/panel_with_state.csv"
 
 # Set seed for reproducibility.
 SEED = 1800
@@ -77,7 +85,8 @@ rng = np.random.default_rng(SEED) # rng is the explicit random-number generator 
 ```
 \newpage
 
-## Setup of the Original Model as in @Agu2023 {.unnumbered}
+
+## Setup of the Original Model as in @Agu2023 and running Monte Carlo simulation {.unnumbered}
 
 We implement the dynamic discrete-choice demand model of @Agu2023. A
 consumer $i$ each period $t$ chooses $y_{it}\in\{0,1,\dots,J\}$ where
@@ -933,8 +942,9 @@ def print_latex_table(data, caption, label, escape=True, position="H"):
     latex = latex.replace(r"\begin{table}[H]", r"\begin{table}[H]" + "\n" + r"\centering")
     print(latex)
     print()
+```
 
-
+```{python}
 # -----------------------------------------------------------------------------
 # Run the pipeline: simulate, build sufficient-statistic cells, estimate, report
 # -----------------------------------------------------------------------------
@@ -1131,4 +1141,48 @@ if __name__ == "__main__":
     else:
         print(rf"\noindent Only {len(cells)} usable cells; increase $N$ or recalibrate the DGP.")
 
+```
+
+## Empirical Application of the Original Model {.unnumbered}
+
+
+```{python}
+# Load the scanner data for the empirical application of the original model.
+netto_df = pd.read_csv(SCANNER_DATA)
+```
+
+```{python}
+# Drop all obs where "week_num = 53" and delete the "promo_flag" column.
+netto_df = netto_df[netto_df["week_num"] != 53].drop(columns=["promo_flag"])
+
+# Ensure consistent types
+netto_df["Brand"] = netto_df["Brand"].astype(str)
+netto_df["Price"] = pd.to_numeric(netto_df["Price"], errors="coerce")
+```
+
+```{python}
+# Long table: one row per week-brand
+unique_prices_by_week_brand = (
+    netto_df
+    .loc[netto_df["Brand"].isin(["1", "2"]) & netto_df["Price"].notna()]
+    .groupby(["week_num", "Brand"])["Price"]
+    .agg(
+        n_transactions="size",
+        n_unique_prices="nunique",
+        unique_prices=lambda x: ", ".join(
+            f"{p:.2f}" for p in sorted(x.dropna().unique())
+        ),
+    )
+    .reset_index()
+    .sort_values(["week_num", "Brand"])
+)
+
+unique_prices_wide = (
+    unique_prices_by_week_brand
+    .pivot(index="week_num", columns="Brand", values="unique_prices")
+    .rename(columns={"1": "Brand 1 unique prices", "2": "Brand 2 unique prices"})
+    .reset_index()
+)
+
+unique_prices_wide.head(23)
 ```
