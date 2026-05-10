@@ -70,7 +70,7 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.special import expit
 from scipy.stats import chi2, norm
-#from pathlib import Path
+from pathlib import Path
 #import os
 
 # Path to the Excel file containing the data
@@ -1153,11 +1153,11 @@ netto_df = pd.read_csv(SCANNER_DATA)
 
 ```{python}
 # Drop all obs where "week_num = 53" and delete the "promo_flag" column.
-netto_df = netto_df[netto_df["week_num"] != 53].drop(columns=["promo_flag"])
+#netto_df = netto_df[netto_df["week_num"] != 53].drop(columns=["promo_flag"])
 
 # Ensure consistent types
 netto_df["Brand"] = netto_df["Brand"].astype(str)
-netto_df["Price"] = pd.to_numeric(netto_df["Price"], errors="coerce")
+netto_df["Price"] = pd.to_numeric(netto_df["Price"], errors="coerce")#.round(1)
 ```
 
 ```{python}
@@ -1185,4 +1185,440 @@ unique_prices_wide = (
 )
 
 unique_prices_wide.head(23)
+```
+
+We merge weekly recommended retail prices, discount prices, and promotion
+states from the price file. The offered price is the discount price when a
+brand is on promotion and the recommended retail price otherwise.
+
+```{python}
+# Load weekly RRP, discount, and promotion information from the third worksheet.
+
+PRICE_PROMO_DATA = "/Users/olivereiberg/Documents/Economics/MA/2_Semester/Data/Price_Promo.xlsx"
+EMPIRICAL_BRANDS = [1, 2]
+EMPIRICAL_PRICE_COLUMNS = {
+    1: "Brand_1_price",
+    2: "Brand_2_price",
+}
+EMPIRICAL_STATE_MATCH_COLUMNS = ["Promo_Brand_1", "Promo_Brand_2"]
+
+
+netto_df["Customer_ID"] = pd.to_numeric(netto_df["Customer_ID"], errors="coerce").astype("Int64")
+netto_df["week_num"] = pd.to_numeric(netto_df["week_num"], errors="coerce").astype("Int64")
+netto_df["brand_id"] = pd.to_numeric(netto_df["Brand"], errors="coerce").fillna(0).astype(int)
+
+price_promo_workbook = pd.ExcelFile(PRICE_PROMO_DATA)
+price_promo_sheet_name = price_promo_workbook.sheet_names[2]
+price_promo_df = pd.read_excel(price_promo_workbook, sheet_name=price_promo_sheet_name)
+price_promo_required_columns = [
+    "WeekNum",
+    "RRP_Brand_1",
+    "Discount_Brand_1",
+    "Promo_Brand_1",
+    "RRP_Brand_2",
+    "Discount_Brand_2",
+    "Promo_Brand_2",
+]
+missing_price_promo_columns = [
+    column for column in price_promo_required_columns
+    if column not in price_promo_df.columns
+]
+if missing_price_promo_columns:
+    raise ValueError(
+        "Price/promo sheet is missing required columns: "
+        + ", ".join(missing_price_promo_columns)
+    )
+
+price_promo_df = price_promo_df[price_promo_required_columns].copy()
+for column in price_promo_required_columns:
+    price_promo_df[column] = pd.to_numeric(price_promo_df[column], errors="coerce")
+
+price_promo_df = price_promo_df.dropna(subset=["WeekNum"]).copy()
+price_promo_df["WeekNum"] = price_promo_df["WeekNum"].astype(int)
+for brand in EMPIRICAL_BRANDS:
+    promo_column = f"Promo_Brand_{brand}"
+    discount_column = f"Discount_Brand_{brand}"
+    rrp_column = f"RRP_Brand_{brand}"
+    price_column = EMPIRICAL_PRICE_COLUMNS[brand]
+
+    price_promo_df[promo_column] = price_promo_df[promo_column].fillna(0).astype(int)
+    price_promo_df[price_column] = np.where(
+        (price_promo_df[promo_column] == 1) & price_promo_df[discount_column].notna(),
+        price_promo_df[discount_column],
+        price_promo_df[rrp_column],
+    )
+
+if price_promo_df["WeekNum"].duplicated().any():
+    duplicated_weeks = price_promo_df.loc[price_promo_df["WeekNum"].duplicated(), "WeekNum"].tolist()
+    raise ValueError(f"Price/promo sheet has duplicate WeekNum rows: {duplicated_weeks}")
+
+price_promo_merge_columns = [
+    "WeekNum",
+    "RRP_Brand_1",
+    "Discount_Brand_1",
+    "Promo_Brand_1",
+    "Brand_1_price",
+    "RRP_Brand_2",
+    "Discount_Brand_2",
+    "Promo_Brand_2",
+    "Brand_2_price",
+]
+netto_df = netto_df.merge(
+    price_promo_df[price_promo_merge_columns],
+    left_on="week_num",
+    right_on="WeekNum",
+    how="left",
+    validate="many_to_one",
+)
+
+unmatched_price_weeks = sorted(
+    netto_df.loc[netto_df["Brand_1_price"].isna() | netto_df["Brand_2_price"].isna(), "week_num"]
+    .dropna()
+    .unique()
+    .tolist()
+)
+netto_df = netto_df.loc[
+    netto_df["Brand_1_price"].notna() & netto_df["Brand_2_price"].notna()
+].copy()
+
+price_imputation_summary = (
+    pd.DataFrame(
+        [
+            {
+                "Brand": brand,
+                "Weeks with prices": price_promo_df[EMPIRICAL_PRICE_COLUMNS[brand]].notna().sum(),
+                "Promo weeks": price_promo_df[f"Promo_Brand_{brand}"].sum(),
+                "Median RRP": price_promo_df[f"RRP_Brand_{brand}"].median(),
+                "Median discount": price_promo_df[f"Discount_Brand_{brand}"].median(),
+                "Median offered price": price_promo_df[EMPIRICAL_PRICE_COLUMNS[brand]].median(),
+                "Min offered price": price_promo_df[EMPIRICAL_PRICE_COLUMNS[brand]].min(),
+                "Max offered price": price_promo_df[EMPIRICAL_PRICE_COLUMNS[brand]].max(),
+            }
+            for brand in EMPIRICAL_BRANDS
+        ]
+    )
+)
+
+price_promo_df[price_promo_merge_columns].head()
+```
+
+```{python}
+#| output: asis
+
+price_promo_merge_summary = pd.DataFrame(
+    {
+        "Statistic": [
+            "Price/promo workbook",
+            "Price/promo sheet",
+            "Price/promo weeks",
+            "Unmatched scanner weeks dropped",
+        ],
+        "Value": [
+            Path(PRICE_PROMO_DATA).name,
+            price_promo_sheet_name,
+            f"{price_promo_df['WeekNum'].nunique()}",
+            ", ".join(str(int(week)) for week in unmatched_price_weeks) if unmatched_price_weeks else "None",
+        ],
+    }
+)
+print_latex_table(
+    price_promo_merge_summary,
+    caption="Price and promotion file merge summary.",
+    label="tbl:empirical-price-promo-merge",
+    escape=True,
+)
+```
+
+```{python}
+# Reconstruct the start-of-period endogenous state used by the CML histories.
+# The file's last_brand/duration columns are post-choice states, so the empirical
+# CML estimator uses lagged purchase histories instead.
+def reconstruct_empirical_state(data):
+    panel = data.sort_values(["Customer_ID", "week_num"]).copy()
+    panel["choice"] = panel["brand_id"].where(panel["brand_id"].isin(EMPIRICAL_BRANDS), 0).astype(int)
+    panel["purchase_brand"] = panel["choice"].where(panel["choice"] > 0)
+    panel["purchase_week"] = panel["week_num"].where(panel["choice"] > 0)
+
+    panel["last_purchase_brand_including_current"] = (
+        panel.groupby("Customer_ID")["purchase_brand"].ffill()
+    )
+    panel["last_purchase_week_including_current"] = (
+        panel.groupby("Customer_ID")["purchase_week"].ffill()
+    )
+
+    panel["pre_last_brand"] = (
+        panel.groupby("Customer_ID")["last_purchase_brand_including_current"].shift(1)
+    )
+    panel["pre_last_purchase_week"] = (
+        panel.groupby("Customer_ID")["last_purchase_week_including_current"].shift(1)
+    )
+    panel["pre_duration"] = panel["week_num"] - panel["pre_last_purchase_week"]
+
+    return panel
+
+
+def empirical_price_value(price):
+    """Linear price utility used in the empirical application."""
+    return -float(price)
+
+
+def empirical_state_vector(row):
+    return np.array([row[column] for column in EMPIRICAL_STATE_MATCH_COLUMNS], dtype=float)
+
+
+def empirical_state_vectors_match(row_a, row_b):
+    state_a = empirical_state_vector(row_a)
+    state_b = empirical_state_vector(row_b)
+    if np.any(pd.isna(state_a)) or np.any(pd.isna(state_b)):
+        return False
+    return np.array_equal(state_a, state_b)
+
+
+def empirical_cml_pairs(panel, require_future_state_match=True):
+    """Build empirical analogues of the original purchase-history CML cells."""
+    cells = []
+    detail_counts = {}
+    skipped = {
+        "no_initial_state": 0,
+        "contains_no_purchase": 0,
+        "not_ab_history": 0,
+        "missing_price": 0,
+        "future_state_mismatch": 0,
+    }
+
+    columns = [
+        "Customer_ID",
+        "week_num",
+        "choice",
+        "pre_last_brand",
+        *EMPIRICAL_PRICE_COLUMNS.values(),
+        *EMPIRICAL_STATE_MATCH_COLUMNS,
+    ]
+
+    for _, household in panel[columns].groupby("Customer_ID", sort=False):
+        household_records = household.sort_values("week_num").to_dict("records")
+        for t in range(len(household_records) - 2):
+            row_t = household_records[t]
+            row_t1 = household_records[t + 1]
+            row_t2 = household_records[t + 2]
+            initial_brand = row_t["pre_last_brand"]
+
+            if pd.isna(initial_brand) or int(initial_brand) not in EMPIRICAL_BRANDS:
+                skipped["no_initial_state"] += 1
+                continue
+
+            initial_brand = int(initial_brand)
+            choices = (row_t["choice"], row_t1["choice"], row_t2["choice"])
+            if 0 in choices:
+                skipped["contains_no_purchase"] += 1
+                continue
+
+            if any(pd.isna(row[col]) for row in (row_t, row_t1, row_t2) for col in EMPIRICAL_PRICE_COLUMNS.values()):
+                skipped["missing_price"] += 1
+                continue
+
+            if require_future_state_match and not empirical_state_vectors_match(row_t1, row_t2):
+                skipped["future_state_mismatch"] += 1
+                continue
+
+            matched_history = False
+            for other_brand in EMPIRICAL_BRANDS:
+                if other_brand == initial_brand:
+                    continue
+
+                if choices == (other_brand, initial_brand, other_brand):
+                    is_a = True
+                elif choices == (initial_brand, other_brand, other_brand):
+                    is_a = False
+                else:
+                    continue
+
+                matched_history = True
+                pair = tuple(sorted((initial_brand, other_brand)))
+                x_gamma = (
+                    empirical_price_value(row_t[EMPIRICAL_PRICE_COLUMNS[other_brand]])
+                    + empirical_price_value(row_t1[EMPIRICAL_PRICE_COLUMNS[initial_brand]])
+                    - empirical_price_value(row_t[EMPIRICAL_PRICE_COLUMNS[initial_brand]])
+                    - empirical_price_value(row_t1[EMPIRICAL_PRICE_COLUMNS[other_brand]])
+                )
+                cells.append((pair_to_index[pair], x_gamma, is_a))
+                count_key = (
+                    initial_brand,
+                    other_brand,
+                    "A" if is_a else "B",
+                )
+                detail_counts[count_key] = detail_counts.get(count_key, 0) + 1
+
+            if not matched_history:
+                skipped["not_ab_history"] += 1
+
+    return cells, detail_counts, skipped
+
+
+def empirical_cells_estimable(cells):
+    if len(cells) < 4:
+        return False
+
+    is_a = np.array([cell[2] for cell in cells], dtype=bool)
+    x_gamma = np.array([cell[1] for cell in cells], dtype=float)
+    return bool(is_a.any() and (~is_a).any() and np.nanstd(x_gamma) > 1e-10)
+
+
+def empirical_cell_summary(label, cells, detail_counts, require_future_state_match):
+    diag = purchase_cell_diagnostics(cells)
+    is_a = np.array([cell[2] for cell in cells], dtype=bool) if cells else np.array([], dtype=bool)
+
+    return {
+        "Sample": label,
+        "Future promo match": "Yes" if require_future_state_match else "No",
+        "Cells": len(cells),
+        "A histories": int(is_a.sum()),
+        "B histories": int((~is_a).sum()) if len(is_a) else 0,
+        "Price-contrast std. dev.": diag["price_sd"],
+        "Nonzero price-contrast share": diag["nonzero_share"],
+    }
+
+
+def make_empirical_estimate_table(theta_hat, cov):
+    se = np.sqrt(np.diag(cov))
+    rows = []
+    for name, estimate, std_err in zip(purchase_parameter_names(), theta_hat, se):
+        z_stat = estimate / std_err if std_err > 0 else np.nan
+        p_value = 2.0 * (1.0 - norm.cdf(abs(z_stat))) if np.isfinite(z_stat) else np.nan
+        rows.append(
+            {
+                "Parameter": name,
+                "CML": estimate,
+                "Std. err.": std_err,
+                "z-stat": z_stat,
+                "p-value": p_value,
+                r"CI 2.5\%": estimate - 1.96 * std_err,
+                r"CI 97.5\%": estimate + 1.96 * std_err,
+            }
+        )
+
+    return pd.DataFrame(rows)
+```
+
+```{python}
+#| output: asis
+
+empirical_panel = reconstruct_empirical_state(netto_df)
+
+empirical_summary_table = pd.DataFrame(
+    {
+        "Statistic": [
+            "Households",
+            "Weeks",
+            "Household-weeks",
+            "Observed purchases",
+            "Purchase rate",
+            "Brand 1 purchases",
+            "Brand 2 purchases",
+            "Rows with pre-choice last brand",
+            "Price source",
+        ],
+        "Value": [
+            f"{empirical_panel['Customer_ID'].nunique()}",
+            f"{empirical_panel['week_num'].nunique()}",
+            f"{len(empirical_panel)}",
+            f"{(empirical_panel['choice'] > 0).sum()}",
+            f"{(empirical_panel['choice'] > 0).mean():.1%}".replace("%", r"\%"),
+            f"{(empirical_panel['choice'] == 1).sum()}",
+            f"{(empirical_panel['choice'] == 2).sum()}",
+            f"{empirical_panel['pre_last_brand'].notna().sum()}",
+            "Weekly RRP/discount offer price",
+        ],
+    }
+)
+
+print_latex_table(
+    empirical_summary_table,
+    caption="Empirical scanner-data sample summary.",
+    label="tbl:empirical-sample-summary",
+    escape=False,
+)
+
+print_latex_table(
+    price_imputation_summary,
+    caption="Weekly RRP, discount, and offered-price support by brand.",
+    label="tbl:empirical-price-imputation",
+    escape=False,
+)
+
+empirical_strict_cells, empirical_strict_detail, empirical_strict_skipped = empirical_cml_pairs(
+    empirical_panel,
+    require_future_state_match=True,
+)
+empirical_relaxed_cells, empirical_relaxed_detail, empirical_relaxed_skipped = empirical_cml_pairs(
+    empirical_panel,
+    require_future_state_match=False,
+)
+
+empirical_cell_table = pd.DataFrame(
+    [
+        empirical_cell_summary(
+            "Strict original CML",
+            empirical_strict_cells,
+            empirical_strict_detail,
+            require_future_state_match=True,
+        ),
+        empirical_cell_summary(
+            "Relaxed diagnostic",
+            empirical_relaxed_cells,
+            empirical_relaxed_detail,
+            require_future_state_match=False,
+        ),
+    ]
+)
+
+print_latex_table(
+    empirical_cell_table,
+    caption="Empirical purchase-history support for the original CML estimator.",
+    label="tbl:empirical-cml-support",
+    escape=False,
+)
+
+if empirical_cells_estimable(empirical_strict_cells):
+    empirical_res = estimate_cml(empirical_strict_cells)
+    empirical_theta_hat = empirical_res.x
+    _, empirical_cov_robust = cml_covariance(empirical_theta_hat, empirical_strict_cells)
+    empirical_estimate_table = make_empirical_estimate_table(empirical_theta_hat, empirical_cov_robust)
+    print_latex_table(
+        empirical_estimate_table,
+        caption="Empirical CML estimates using strict original future promotion-state matching.",
+        label="tbl:empirical-cml-estimates",
+        escape=False,
+    )
+else:
+    print(
+        r"\noindent\emph{Strict empirical CML diagnostic:} No finite strict CML estimate is reported. "
+        r"With weekly RRP/discount offer prices, the original future promotion-state matching condition leaves "
+        rf"{len(empirical_strict_cells)} usable cells."
+    )
+    print()
+
+if empirical_cells_estimable(empirical_relaxed_cells):
+    empirical_relaxed_res = estimate_cml(empirical_relaxed_cells)
+    empirical_relaxed_theta_hat = empirical_relaxed_res.x
+    _, empirical_relaxed_cov_robust = cml_covariance(
+        empirical_relaxed_theta_hat,
+        empirical_relaxed_cells,
+    )
+    empirical_relaxed_estimate_table = make_empirical_estimate_table(
+        empirical_relaxed_theta_hat,
+        empirical_relaxed_cov_robust,
+    )
+    print_latex_table(
+        empirical_relaxed_estimate_table,
+        caption="Relaxed empirical CML estimates without future price-state matching.",
+        label="tbl:empirical-relaxed-cml-estimates",
+        escape=False,
+    )
+    print(
+        r"\noindent\emph{Note:} The relaxed empirical estimates use the same A/B purchase "
+        r"histories as the original estimator, but do not impose equality of the future "
+        r"weekly promotion vector. They should therefore be interpreted as a diagnostic "
+        r"empirical analogue rather than the exact sufficient-statistic CML estimator."
+    )
 ```

@@ -1,0 +1,556 @@
+---
+title: Project Description
+author:
+  - Solveig Røndal-Liniger (szc836)
+  - Oliver Eiberg Jørgensen (zkt394)
+date: 2026-04-23
+date-format: MMMM DD, YYYY
+jupyter: python3
+execute: 
+  echo: false
+  warning: false
+format:
+  pdf: 
+    number-sections: true
+    colorlinks: true
+    geometry:
+      - top=30mm
+      - left=25mm
+      - bottom=25mm
+      - right=25mm
+      - includefoot=false
+    lang: en
+    fontsize: 12pt
+    highlight-style: github-light
+    include-in-header:
+      text: |
+        \usepackage{setspace}
+        \usepackage{booktabs}
+        \usepackage{float}
+        \setstretch{1.3}
+        \setlength{\floatsep}{6pt}
+        \setlength{\textfloatsep}{6pt}
+        \setlength{\intextsep}{6pt}
+        \setlength{\abovecaptionskip}{4pt}
+        \setlength{\belowcaptionskip}{2pt}
+        \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{section}
+        \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{subsection}
+        \RedeclareSectionCommand[beforeskip=0.1ex,afterskip=0.01ex]{subsubsection}
+        \usepackage{fancyhdr}
+        \usepackage{graphicx}
+        \usepackage{eso-pic}
+        \pagestyle{fancy}
+        \setlength{\footskip}{36pt}
+        \fancyhf{}
+        \lfoot{\shortstack[l]{{\bfseries University of Copenhagen}\\Department of Economics}}
+        \rfoot{\thepage}
+        \renewcommand{\headrulewidth}{0pt}
+        \renewcommand{\footrulewidth}{0pt}
+        \fancypagestyle{plain}{%
+          \fancyhf{}
+          \lfoot{\shortstack[l]{{\bfseries University of Copenhagen}\\Department of Economics}}
+          \rfoot{\thepage}
+          \renewcommand{\headrulewidth}{0pt}
+          \renewcommand{\footrulewidth}{0pt}
+        }
+        \AddToShipoutPictureFG{%
+          \AtPageUpperLeft{%
+            \put(\LenToUnit{\paperwidth-10mm-5cm},\LenToUnit{-2.5cm}){%
+              \includegraphics[width=5cm]{ku_logo_uk_h.png}%
+            }%
+          }%
+        }
+---
+
+<!-- Importing libraries -->
+```{python}
+# Loading necessary libraries
+import pandas as pd
+import numpy as np
+from scipy.optimize import minimize
+from scipy.special import expit
+from scipy.stats import chi2, norm
+from pathlib import Path
+#import os
+
+# Path to the Excel file containing the data
+#PROJECT_ROOT = Path(os.environ.get("QUARTO_PROJECT_DIR", Path.cwd())).resolve()
+#DATA_PATH = PROJECT_ROOT / "Data"
+#SCANNER_DATA = DATA_PATH / "panel_with_state.csv"
+SCANNER_DATA = "/Users/olivereiberg/Documents/Economics/MA/2_Semester/Data/panel_with_state.csv"
+PRICE_PROMO_DATA = "/Users/olivereiberg/Documents/Economics/MA/2_Semester/Data/Price_Promo.xlsx"
+NETTO_DF_EXPORT_PATH = Path("/Users/olivereiberg/Documents/Economics/MA/2_Semester/Data/netto_df.csv")
+
+# Set seed for reproducibility.
+SEED = 1800
+rng = np.random.default_rng(SEED) # rng is the explicit random-number generator used everywhere below instead of relying on NumPy's global random state.
+```
+\newpage
+
+```{python}
+EMPIRICAL_BRANDS = [1, 2]
+EMPIRICAL_PRICE_COLUMNS = {
+    1: "Brand_1_price",
+    2: "Brand_2_price",
+}
+
+# Load scanner panel
+netto_df = pd.read_csv(SCANNER_DATA)
+
+# Match current QMD setup
+netto_df = netto_df[netto_df["week_num"] != 53].copy()
+
+netto_df["Brand"] = netto_df["Brand"].astype(str)
+netto_df["Price"] = pd.to_numeric(netto_df["Price"], errors="coerce").round(1)
+netto_df["Customer_ID"] = pd.to_numeric(netto_df["Customer_ID"], errors="coerce").astype("Int64")
+netto_df["week_num"] = pd.to_numeric(netto_df["week_num"], errors="coerce").astype("Int64")
+netto_df["brand_id"] = pd.to_numeric(netto_df["Brand"], errors="coerce").fillna(0).astype(int)
+
+# Load third Excel sheet with RRP/discount/promo data
+price_promo_workbook = pd.ExcelFile(PRICE_PROMO_DATA)
+price_promo_sheet_name = price_promo_workbook.sheet_names[2]
+price_promo_df = pd.read_excel(price_promo_workbook, sheet_name=price_promo_sheet_name)
+
+price_promo_required_columns = [
+    "WeekNum",
+    "RRP_Brand_1",
+    "Discount_Brand_1",
+    "Promo_Brand_1",
+    "RRP_Brand_2",
+    "Discount_Brand_2",
+    "Promo_Brand_2",
+]
+
+price_promo_df = price_promo_df[price_promo_required_columns].copy()
+
+for column in price_promo_required_columns:
+    price_promo_df[column] = pd.to_numeric(price_promo_df[column], errors="coerce")
+
+price_promo_df = price_promo_df.dropna(subset=["WeekNum"]).copy()
+price_promo_df["WeekNum"] = price_promo_df["WeekNum"].astype(int)
+
+# Construct offered prices: discount if promo, otherwise RRP
+for brand in EMPIRICAL_BRANDS:
+    promo_column = f"Promo_Brand_{brand}"
+    discount_column = f"Discount_Brand_{brand}"
+    rrp_column = f"RRP_Brand_{brand}"
+    price_column = EMPIRICAL_PRICE_COLUMNS[brand]
+
+    price_promo_df[promo_column] = price_promo_df[promo_column].fillna(0).astype(int)
+    price_promo_df[price_column] = np.where(
+        (price_promo_df[promo_column] == 1) & price_promo_df[discount_column].notna(),
+        price_promo_df[discount_column],
+        price_promo_df[rrp_column],
+    )
+
+price_promo_merge_columns = [
+    "WeekNum",
+    "RRP_Brand_1",
+    "Discount_Brand_1",
+    "Promo_Brand_1",
+    "Brand_1_price",
+    "RRP_Brand_2",
+    "Discount_Brand_2",
+    "Promo_Brand_2",
+    "Brand_2_price",
+]
+
+# Join weekly price/promo data onto scanner panel
+netto_df = netto_df.merge(
+    price_promo_df[price_promo_merge_columns],
+    left_on="week_num",
+    right_on="WeekNum",
+    how="left",
+    validate="many_to_one",
+)
+
+# Keep only rows with both alternative prices available
+netto_df = netto_df.loc[
+    netto_df["Brand_1_price"].notna() & netto_df["Brand_2_price"].notna()
+].copy()
+
+netto_df.head()
+```
+
+## Simple Dynamic Empirical Model {.unnumbered}
+
+```{python}
+#| output: false
+
+#NETTO_DF_EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+netto_df.to_csv(NETTO_DF_EXPORT_PATH, index=False)
+```
+
+The original CML estimator is quite demanding because it only uses very specific purchase histories with matching future price states. As a simpler empirical alternative, we estimate a finite-horizon dynamic logit model directly on the scanner panel. The model keeps all weeks 1--52, but compresses the state space by capping the number of weeks since the household's last purchase at 12.
+
+The household chooses among no purchase, brand 1, and brand 2. The state is the current week, the household's last purchased brand, and the number of weeks since that purchase. Prices and promotions are treated as observed weekly state variables. The dynamic component is estimated by nested fixed point: for each parameter vector, the value function is solved by backward induction and the resulting conditional choice probabilities are used in the likelihood.
+
+```{python}
+#| output: asis
+
+SIMPLE_D_CAP = 12
+SIMPLE_DELTA = 0.95
+SIMPLE_HOUSEHOLD_LIMIT = None
+SIMPLE_OPTIMIZER_MAXITER = 500
+
+
+def print_latex_table(df, caption, label, float_format="%.3f", escape=True):
+    """Print a pandas dataframe as a LaTeX table for Quarto/PDF output."""
+    latex = df.to_latex(
+        index=False,
+        escape=escape,
+        caption=caption,
+        label=label,
+        float_format=float_format,
+    )
+    print(latex)
+
+
+def logsumexp_np(values, axis=-1):
+    max_values = np.max(values, axis=axis, keepdims=True)
+    stable_values = values - max_values
+    return np.squeeze(
+        max_values + np.log(np.exp(stable_values).sum(axis=axis, keepdims=True)),
+        axis=axis,
+    )
+
+
+def prepare_simple_model_inputs(data, d_cap=SIMPLE_D_CAP, household_limit=None):
+    panel = data.sort_values(["Customer_ID", "week_num"]).copy()
+
+    if household_limit is not None:
+        selected_households = panel["Customer_ID"].drop_duplicates().head(household_limit)
+        panel = panel.loc[panel["Customer_ID"].isin(selected_households)].copy()
+
+    panel["simple_choice"] = np.where(
+        panel["brand_id"].isin(EMPIRICAL_BRANDS),
+        panel["brand_id"],
+        0,
+    ).astype(int)
+
+    panel["simple_purchase_brand"] = panel["simple_choice"].where(panel["simple_choice"] > 0)
+    panel["simple_purchase_week"] = panel["week_num"].where(panel["simple_choice"] > 0)
+
+    household_groups = panel.groupby("Customer_ID", sort=False)
+    panel["last_purchase_brand"] = household_groups["simple_purchase_brand"].ffill()
+    panel["last_purchase_week"] = household_groups["simple_purchase_week"].ffill()
+
+    panel["pre_last_brand"] = household_groups["last_purchase_brand"].shift(1)
+    panel["pre_last_purchase_week"] = household_groups["last_purchase_week"].shift(1)
+
+    panel["simple_last_brand"] = (
+        panel["pre_last_brand"]
+        .fillna(0)
+        .astype(int)
+        .clip(lower=0, upper=2)
+    )
+
+    raw_duration = panel["week_num"] - panel["pre_last_purchase_week"]
+    panel["simple_duration"] = np.where(
+        panel["simple_last_brand"] == 0,
+        0,
+        raw_duration.fillna(0),
+    )
+    panel["simple_duration"] = (
+        panel["simple_duration"]
+        .clip(lower=0, upper=d_cap)
+        .astype(int)
+    )
+
+    weekly_prices = (
+        panel[["week_num", "Brand_1_price", "Brand_2_price"]]
+        .drop_duplicates()
+        .sort_values("week_num")
+        .reset_index(drop=True)
+    )
+    week_to_idx = {
+        week: idx
+        for idx, week in enumerate(weekly_prices["week_num"].to_numpy())
+    }
+    panel["simple_week_idx"] = panel["week_num"].map(week_to_idx).astype(int)
+
+    price_matrix = weekly_prices[["Brand_1_price", "Brand_2_price"]].to_numpy(dtype=float)
+
+    obs = {
+        "week_idx": panel["simple_week_idx"].to_numpy(dtype=int),
+        "last_brand": panel["simple_last_brand"].to_numpy(dtype=int),
+        "duration": panel["simple_duration"].to_numpy(dtype=int),
+        "choice": panel["simple_choice"].to_numpy(dtype=int),
+    }
+
+    return panel, weekly_prices, price_matrix, obs
+
+
+simple_panel, simple_weekly_prices, simple_price_matrix, simple_obs = prepare_simple_model_inputs(
+    netto_df,
+    d_cap=SIMPLE_D_CAP,
+    household_limit=SIMPLE_HOUSEHOLD_LIMIT,
+)
+
+simple_sample_summary = pd.DataFrame(
+    {
+        "Statistic": [
+            "Households",
+            "Weeks",
+            "Household-weeks",
+            "Observed purchases",
+            "Purchase rate",
+            "Brand 1 purchases",
+            "Brand 2 purchases",
+            "Duration cap",
+            "Discount factor",
+        ],
+        "Value": [
+            f"{simple_panel['Customer_ID'].nunique():,}",
+            f"{simple_panel['week_num'].nunique():,}",
+            f"{len(simple_panel):,}",
+            f"{(simple_panel['simple_choice'] > 0).sum():,}",
+            f"{(simple_panel['simple_choice'] > 0).mean():.1%}",
+            f"{(simple_panel['simple_choice'] == 1).sum():,}",
+            f"{(simple_panel['simple_choice'] == 2).sum():,}",
+            SIMPLE_D_CAP,
+            SIMPLE_DELTA,
+        ],
+    }
+)
+
+print_latex_table(
+    simple_sample_summary,
+    caption="Sample used for the simple dynamic empirical model.",
+    label="tbl:simple-dynamic-sample",
+    escape=True,
+)
+```
+
+```{python}
+#| output: asis
+
+def unpack_simple_params(theta_raw):
+    return {
+        "no_purchase_const": theta_raw[0],
+        "brand2_const": theta_raw[1],
+        "price_coef": -np.exp(theta_raw[2]),
+        "switch_cost": np.exp(theta_raw[3]),
+        "duration_penalty": np.exp(theta_raw[4]),
+    }
+
+
+def solve_simple_dynamic_logit(theta_raw, price_matrix, d_cap=SIMPLE_D_CAP, delta=SIMPLE_DELTA):
+    params = unpack_simple_params(theta_raw)
+    n_weeks = price_matrix.shape[0]
+    n_brands_with_outside = 3
+
+    value = np.zeros((n_weeks + 1, n_brands_with_outside, d_cap + 1))
+    choice_probs = np.zeros((n_weeks, n_brands_with_outside, d_cap + 1, 3))
+
+    last_brand_grid = np.arange(n_brands_with_outside)[:, None]
+    duration_grid = np.arange(d_cap + 1)[None, :]
+    has_previous_purchase = last_brand_grid > 0
+
+    no_purchase_next_last = np.repeat(np.arange(n_brands_with_outside)[:, None], d_cap + 1, axis=1)
+    no_purchase_next_duration = np.where(
+        no_purchase_next_last == 0,
+        0,
+        np.minimum(duration_grid + 1, d_cap),
+    )
+
+    for week_idx in range(n_weeks - 1, -1, -1):
+        brand_1_price, brand_2_price = price_matrix[week_idx]
+
+        utility_no_purchase = (
+            params["no_purchase_const"]
+            - params["duration_penalty"] * duration_grid * has_previous_purchase
+        )
+        utility_brand_1 = (
+            params["price_coef"] * brand_1_price
+            - params["switch_cost"] * (last_brand_grid == 2)
+            + np.zeros_like(duration_grid, dtype=float)
+        )
+        utility_brand_2 = (
+            params["brand2_const"]
+            + params["price_coef"] * brand_2_price
+            - params["switch_cost"] * (last_brand_grid == 1)
+            + np.zeros_like(duration_grid, dtype=float)
+        )
+
+        choice_value = np.stack(
+            [utility_no_purchase, utility_brand_1, utility_brand_2],
+            axis=2,
+        )
+
+        choice_value[:, :, 0] += (
+            delta * value[week_idx + 1, no_purchase_next_last, no_purchase_next_duration]
+        )
+        choice_value[:, :, 1] += delta * value[week_idx + 1, 1, 0]
+        choice_value[:, :, 2] += delta * value[week_idx + 1, 2, 0]
+
+        inclusive_value = logsumexp_np(choice_value, axis=2)
+        value[week_idx] = inclusive_value
+        choice_probs[week_idx] = np.exp(choice_value - inclusive_value[:, :, None])
+
+    return value, choice_probs
+
+
+def simple_neg_loglik_sum(theta_raw, obs, price_matrix, d_cap=SIMPLE_D_CAP, delta=SIMPLE_DELTA):
+    _, choice_probs = solve_simple_dynamic_logit(
+        theta_raw,
+        price_matrix,
+        d_cap=d_cap,
+        delta=delta,
+    )
+    observed_probs = choice_probs[
+        obs["week_idx"],
+        obs["last_brand"],
+        obs["duration"],
+        obs["choice"],
+    ]
+    return -np.log(np.clip(observed_probs, 1e-300, 1.0)).sum()
+
+
+def estimate_simple_dynamic_model(obs, price_matrix, d_cap=SIMPLE_D_CAP, delta=SIMPLE_DELTA):
+    n_obs = len(obs["choice"])
+
+    starting_values = [
+        np.array([2.0, 0.0, np.log(0.05), np.log(0.25), np.log(0.05)]),
+        np.array([1.5, 0.5, np.log(0.02), np.log(0.50), np.log(0.10)]),
+        np.array([2.5, -0.5, np.log(0.10), np.log(0.10), np.log(0.02)]),
+    ]
+    bounds = [
+        (-10.0, 10.0),
+        (-10.0, 10.0),
+        (np.log(1e-4), np.log(10.0)),
+        (np.log(1e-4), np.log(20.0)),
+        (np.log(1e-4), np.log(20.0)),
+    ]
+
+    def average_objective(theta_raw):
+        return simple_neg_loglik_sum(
+            theta_raw,
+            obs,
+            price_matrix,
+            d_cap=d_cap,
+            delta=delta,
+        ) / n_obs
+
+    results = []
+    for start in starting_values:
+        result = minimize(
+            average_objective,
+            start,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={
+                "maxiter": SIMPLE_OPTIMIZER_MAXITER,
+                "ftol": 1e-10,
+                "gtol": 1e-6,
+            },
+        )
+        results.append(result)
+
+    best_result = min(results, key=lambda res: res.fun)
+    return best_result, results
+
+
+def covariance_from_lbfgs(result, n_obs):
+    if not hasattr(result.hess_inv, "todense"):
+        return np.full((len(result.x), len(result.x)), np.nan)
+
+    raw_cov = np.asarray(result.hess_inv.todense(), dtype=float) / n_obs
+    return raw_cov
+
+
+def simple_parameter_table(result, model_name, n_obs):
+    transformed = unpack_simple_params(result.x)
+    raw_cov = covariance_from_lbfgs(result, n_obs)
+
+    rows = [
+        ("No-purchase constant", "no_purchase_const", 0, 1.0),
+        ("Brand 2 constant", "brand2_const", 1, 1.0),
+        ("Price coefficient", "price_coef", 2, transformed["price_coef"]),
+        ("Switching cost", "switch_cost", 3, transformed["switch_cost"]),
+        ("Duration penalty", "duration_penalty", 4, transformed["duration_penalty"]),
+    ]
+
+    table_rows = []
+    for parameter_label, parameter_key, raw_idx, derivative in rows:
+        estimate = transformed[parameter_key]
+        std_err = np.sqrt(max(derivative**2 * raw_cov[raw_idx, raw_idx], 0.0))
+        z_stat = estimate / std_err if std_err > 0 else np.nan
+        p_value = 2 * (1 - norm.cdf(abs(z_stat))) if np.isfinite(z_stat) else np.nan
+        ci_low = estimate - 1.96 * std_err if np.isfinite(std_err) else np.nan
+        ci_high = estimate + 1.96 * std_err if np.isfinite(std_err) else np.nan
+
+        table_rows.append(
+            {
+                "Model": model_name,
+                "Parameter": parameter_label,
+                "Estimate": estimate,
+                "Std. err.": std_err,
+                "z-stat": z_stat,
+                "p-value": p_value,
+                "CI 2.5\\%": ci_low,
+                "CI 97.5\\%": ci_high,
+            }
+        )
+
+    return pd.DataFrame(table_rows)
+
+
+def simple_fit_table(result, model_name, n_obs, n_params):
+    log_likelihood = -result.fun * n_obs
+    return {
+        "Model": model_name,
+        "Converged": "Yes" if result.success else "No",
+        "Log-likelihood": log_likelihood,
+        "AIC": 2 * n_params - 2 * log_likelihood,
+        "BIC": np.log(n_obs) * n_params - 2 * log_likelihood,
+        "Iterations": result.nit,
+    }
+
+
+simple_dynamic_result, simple_dynamic_all_results = estimate_simple_dynamic_model(
+    simple_obs,
+    simple_price_matrix,
+    d_cap=SIMPLE_D_CAP,
+    delta=SIMPLE_DELTA,
+)
+
+simple_myopic_result, simple_myopic_all_results = estimate_simple_dynamic_model(
+    simple_obs,
+    simple_price_matrix,
+    d_cap=SIMPLE_D_CAP,
+    delta=0.0,
+)
+
+simple_n_obs = len(simple_obs["choice"])
+simple_n_params = len(simple_dynamic_result.x)
+
+simple_estimates_table = pd.concat(
+    [
+        simple_parameter_table(simple_dynamic_result, "Dynamic", simple_n_obs),
+        simple_parameter_table(simple_myopic_result, "Myopic", simple_n_obs),
+    ],
+    ignore_index=True,
+)
+
+print_latex_table(
+    simple_estimates_table,
+    caption="Simple empirical dynamic-logit estimates.",
+    label="tbl:simple-dynamic-estimates",
+    escape=False,
+)
+
+simple_fit_summary = pd.DataFrame(
+    [
+        simple_fit_table(simple_dynamic_result, "Dynamic", simple_n_obs, simple_n_params),
+        simple_fit_table(simple_myopic_result, "Myopic", simple_n_obs, simple_n_params),
+    ]
+)
+
+print_latex_table(
+    simple_fit_summary,
+    caption="Fit comparison for the simple empirical model.",
+    label="tbl:simple-dynamic-fit",
+    escape=True,
+)
+```
