@@ -1603,7 +1603,7 @@ if empirical_cells_estimable(empirical_relaxed_cells):
     empirical_relaxed_theta_hat = empirical_relaxed_res.x
     _, empirical_relaxed_cov_robust = cml_covariance(
         empirical_relaxed_theta_hat,
-        empirical_relaxed_cells,
+        empirical_relaxed_cells,-
     )
     empirical_relaxed_estimate_table = make_empirical_estimate_table(
         empirical_relaxed_theta_hat,
