@@ -1,0 +1,380 @@
+\section{Model}
+\subsection{Motivation for the model}
+This paper builds on the dynamic discrete choice framework from \cite{Agu2023}, where consumer purchase behaviour is modelled as a dynamic decision problem with state dependence. In the framework, past purchase behaviour affects current choices through the duration since the last purchase. This is particularly relevant for storable goods such as canned tuna, where the timing of previous purchases contains information about the consumer’s current inventory. Other papers, such as \cite{HendelNevo2006}, model inventory more explicitly. However, in this paper we model duration since last purchase as a proxy for consumers' inventory level. We will discuss this assumption later in the section X. While the model is motivated by \cite{Agu2023} framework, we estimate it using the Nested Fixed Point (NFXP) algorithm developed by \cite{Rust1987} rather than the conditional maximum likelihood approach. 
+\\
+\\ 
+In principle, Aguirregabiria’s estimator would be attractive because it controls for fixed-effects unobserved heterogeneity without solving the dynamic programming problem. However, the estimator relies on observing consumers with specific choice histories that visit the same states in different orders. In our empirical data, these identifying histories are rare. We therefore estimate a simpler structural model using NFXP. % Husk at indsætte tal i fodnote 
+
+
+\subsection{Setup}
+In the model there are \textit{J} different brands of a storable good which are indexed as $j \in \{1,2...,J\}$. Consumers are indexed by \textit{i}, $i \in \{1,2...,N\}$ and time as $t \in \{1,2,...,T\}$. As in \cite{Agu2023}, we index time by weeks to also include weeks in which consumers have not purchased the storable good. However, we slightly modify the indexing of time in order to account for the retailer's promotional week \footnote{Netto's promotions run from Saturday to Friday. Therefore, when aggregating the data to the weekly level, we define a promotion week as running from Saturday to Friday rather than using the standard calendar week.}. In our empirical application we use $J = 2$ (Glyngøre \& Navito) and $T = X$ weeks. Both brands has a \textit{canned tuna in oil} and \textit{canned tuna in water} variant. We treat two variants of each brand as one product since our main focus are on the brand- and quantity choice. Furthermore, the effect of buying one variant over another cannot be estimated because promotions are symmetric across variants. 
+\\
+\\
+In each period, \textit{t}, consumer \textit{i} chooses an action, $y_{it}$ from the following choice set
+\begin{align}
+   \mathcal{Y} &= \{0\}  \cup \{j \in \{1,2...,J\}\}
+\end{align}
+Where $y_{it} = 0$ denotes the no purchase option and $y_{it} = j$ denotes the brand choice that each consumer chooses. This yields $J+1$ different choice alternatives. 
+
+
+\subsection{Utility Function}
+
+We define the utility function closely following \cite{Agu2023}, but without allowing for consumer-specific unobserved heterogeneity. Hence, brand preferences are assumed to be common across consumers. Consumer $i$'s per-period utility from action $y_{it}$ is given by
+\begin{equation}
+U_{it}(y_{it})
+=
+u(y_{it},x_{it},p_{it})
++
+\epsilon_{it}(y_{it}),
+\end{equation}
+where the deterministic part of utility is specified as
+\begin{equation}
+u(y_{it},x_{it},p_{it})
+=
+\begin{cases} 
+\alpha_{\ell_{it}}
+-
+\beta^{\text{dep}}(\ell_{it},d_{it})
+& \text{if } y_{it}=0, \\[6pt]
+
+\alpha_j
+-
+\gamma \cdot p_{it}(j)
+-
+\beta^{\text{sc}}(\ell_{it},j)
+& \text{if } y_{it}=j
+\end{cases}
+\end{equation}
+The state variables are later defined in section 2.8. is defined later in Section 2.5 
+\\
+\\
+In the simulation and the empirical application of the model, we have chosen that one brand-specific constant is normalized. We normalize the brand-specific constant for Glyngøre, $\alpha_1$ to zero. Therefore, the parameter $\alpha_2$ should be interpreted as the utility for Navito relativt to Glyngøre. 
+% Husk at skriv om alpha
+\\
+\\ The brand-specifc constant capture the brand preferences. A negative value of $\alpha_2$ should be interpreted as consumers having lower average preference for Navito compared to Glyngøre. Conversely, a positive value should be interpreted as consumers having a higher preference for Navito compared to Glyngøre. 
+
+\subsection{Transition Rule}
+We define the following transition rule closely following \cite{Agu2023}
+\[
+(\ell_{i,t+1},d_{i,t+1})=
+\begin{cases}
+(\ell_{it},\,d_{it}+1) & \text{if } y_{it}=0,\\[2pt]
+(j,\,1)                     & \text{if } y_{it}=j
+\end{cases}
+\]
+When the consumer makes no purchase, $y_{it} = 0$, the brand state, $\ell_{it}$ remains unchanged while duration increments by 1. When the consumer makes a purchase the brand state variables changes so that $j$ becomes the last brand purchased. 
+
+
+
+\subsection{Consumer Decision Problem} 
+In each period, the consumer decides whether to purchase canned tuna. In each period \textit{t}, consumer \textit{i} observes the state variables, $s_t = (x_t,\varepsilon_t)$ where $x_t$ contains the state variables and $\varepsilon_t$ is the error term. The observed state variables are given as $x_t = (\ell_{it},d_{it},p_{it})$. The state variables are further described in section 2.7 and 2.8.  The action \(d\) corresponds to the consumer's choice \(y_{it}\), where \(d=0\) denotes no purchase and \(d=j\) denotes the purchase of brand \(j \in \{1,\ldots,J\}\). Hence, \(d \in \mathcal{Y}\).
+\\
+\\
+Consumers maximise the discounted sum of the utilities. Following \cite{rust1994structural} the consumer's problem can be represented as a Markov decision process, since current utility depends on the current state and action, and the transition of future states depends only on the current state and the action chosen in the current period. The consumers a set of actions $\delta = \{\delta_0,...,\delta_T\}$ where $d_t = \delta_t(s_t)$ that solves the following 
+\begin{align*} 
+    V(x,\varepsilon_t) = \max_{\delta = \{\delta_0,...,\delta_T\}} = \mathbb{E}_\delta [\sum_{t=0}^\infty \beta^t u_t(s_t,d_t \vert s_0 = s)] 
+\end{align*}
+Where $\beta \in (0,1)$ is the discount factor. Given the current state, the consumer chooses a decision that determines current utility and affects the distribution of future states through the Markov transition probability. This allows the optimal decision rule to be found recursively given by the Bellman equation.
+\begin{align*} 
+    V(x,\varepsilon) =\max_{\delta = \{\delta_0,...,\delta_T\}} \{ u_t(s_t,d_t) + \beta \mathbb{E}[V(x',\varepsilon')\vert x, \varepsilon,d]\} \tag{2.1}
+\end{align*}
+The notation \(x'\) and \(\varepsilon'\) denotes next period's state and error term, so \(V(x',\varepsilon')\) is the future value the consumer expects after making the current decision.
+\\
+\\
+After formulating the Bellman equation, the next step is to express the expectation over future states explicitly. Since the consumer does not know the next period’s state and utility shocks with certainty, expected value function is evaluated by integrating over all possible future states and shocks
+\begin{align*}
+    \mathbb{E}[V(x',\varepsilon') \vert x,\varepsilon,d)] = \int_X \int_\Omega V(x',\varepsilon') p(x',\varepsilon' \vert x,\varepsilon,d)dx'd\varepsilon' \tag{2.2} 
+\end{align*}
+Following \cite{Rust1987} the above dynamic discrete choice problem can be simplified by imposing three key assumptions. 
+\\
+\\
+\textbf{Assumption 1}: Utility is assumed to be additively separable in preferences, $U_t(s_t,d_t) = u(x_t,d_t,X) + \varepsilon_t(d_t)$
+\\
+\\
+\textbf{Assumption 2}: The model assumes conditional independence. Conditional on the current observed state, $x_t$, and choice $d_t$, the next observed state, $x_{t+1}$ evolves independently from $\varepsilon_t$ which formally can be written as 
+\begin{align*}
+    p(x_{t+1}, \varepsilon_t \vert x_t,\varepsilon_t,d_t) = q(\varepsilon_t \vert x_{t+1}) p(x_{t+1} \vert x_t,d_t)
+\end{align*}
+In this paper, this implies that once the consumer’s current purchase decision is observed, the evolution of duration since last purchase and previous purchase quantity depends on the current state and decision, but not directly on the current utility shock.
+\\
+\\
+\textbf{Assumption 3}: The choice-specific shocks are assumed to be independently and identically distributed Type I extreme value.
+\\
+\\ 
+Using \textbf{Assumption 1}, the per-period utility can be written as the sum of a deterministic component and a choice-specific shock, $U(x,d,\varepsilon) = u(x,d) + \varepsilon(d).$
+Using\textbf{ Assumption 2}, the transition of next period's observed state is conditionally independent of the current utility shock once the current state and action are given. Hence, the  distribution of next period's observed state and utility shock can be factorized as $p(x',\varepsilon' \mid x,\varepsilon,d) = p(x' \mid x,d)q(\varepsilon' \mid x')$. Therefore, the Bellman equation can be written as follows
+\begin{align*}
+     V(x,\varepsilon) = \max_{d \in \mathcal{Y}} \{u(x,d) + \varepsilon(d) + \beta \int_X \int_{\Omega} V(x',\varepsilon')p(x' \vert x,d)q(\varepsilon' \vert x')dx'd\varepsilon'\}
+\end{align*} 
+Because of \textbf{Assumption 2}, the expected future value after choosing action \(d\) in state \(x\) can be written as an expected value function. This function averages over the possible next-period observed states and utility shocks:
+\begin{align*}
+    EV(x,d) 
+    &= \Gamma(EV)(x,d) \\
+    &= \int_{\mathcal{X}} \int_{\Omega} 
+    V(x',\varepsilon')
+    p(x' \mid x,d)
+    q(\varepsilon' \mid x')
+    \, d\varepsilon' \, dx' .
+\end{align*} % Husk at skrive hvad gamma er 
+Here, \(EV(x,d)\) is the expected value of future utility after choosing action \(d\) in state \(x\). The future value function is given by
+\begin{align*}
+    V(x',\varepsilon') 
+    =
+    \max_{d' \in C(x')}
+    \left\{
+    u(x',d') + \beta EV(x',d') + \varepsilon'(d')
+    \right\}.
+\end{align*}
+\noindent
+The difficulty is that $V(x',\varepsilon')$ contains the maximum over all future choices. Without further assumptions, evaluating this expectation would require integrating over the full vector of future shocks. \textbf{Assumption 3} solves this problem by assuming that the choice-specific shocks are independently and identically Type I extreme value distributed. Under this assumption, the expectation of the maximum has a closed-form log-sum representation
+\begin{align*}
+    \int_{\Omega}
+    V(x',\varepsilon')
+    q(\varepsilon' \mid x')
+    d\varepsilon'
+    =
+    \log
+    \left[
+    \sum_{d' \in C(x')}
+    \exp
+    \left(
+    u(x',d')
+    +
+    \beta EV(x',d')
+    \right)
+    \right].
+\end{align*}
+Substituting this expression into the expected value function gives
+\begin{align*}
+    EV(x,d)
+    =
+    \Gamma(EV)(x,d)
+    =
+    \int_X
+    \log
+    \left[
+    \sum_{d' \in C(x')}
+    \exp
+    \left(
+    u(x',d')
+    +
+    \beta EV(x',d')
+    \right)
+    \right]
+    p(x' \mid x,d)
+    dx'.
+\end{align*}
+This implies that the conditional choice probabilities (CCP) can be written in closed-form logit form
+\begin{align*}
+    P(d \mid x)
+    =
+    \frac{
+    \exp
+    \left[
+    u(x,d)
+    +
+    \beta EV(x,d)
+    \right]
+    }{
+    \sum_{j \in C(x)}
+    \exp
+    \left[
+    u(x,j)
+    +
+    \beta EV(x,j)
+    \right]
+    }.
+\end{align*}
+The numerator represents the exponentiated value of choosing action $d$ in state $x$, while the denominator sums the corresponding value across all feasible actions. Hence, the probability of choosing $d$ depends on both current utility and the expected value function. 
+
+\subsection{Estimation using the Nested Fixed Point Algorithm}
+
+The model is estimated by maximum likelihood using the Nested Fixed Point (NFXP) algorithm developed by \cite{Rust1987}. The key challenge is that the CCP depend on the expected value function, and the expected value function itself depends on the structural parameters. Therefore, the likelihood cannot be evaluated from current-period utility alone.
+\\
+\\
+Let $\theta$ denote the vector of structural parameters. We write $\theta=(\theta_u,\theta_p)$, where $\theta_u$ contains the utility parameters and $\theta_p$ contains the parameters governing the transition process of the state variables. For a given parameter vector $\theta$, the expected value function satisfies the fixed point equation
+\begin{align*}
+EV_\theta(x,d)
+=
+\Gamma_\theta(EV_\theta)(x,d),
+\end{align*}
+where $(d \in \mathcal{Y})$ denotes the current action. 
+\\
+\\
+Given the Type I extreme value assumption, the model implies closed-form conditional choice probabilities. For a consumer in state $x$, the probability of choosing action $d$ is
+\begin{align*}
+P_\theta(d \mid x)
+=
+\frac{
+\exp\left[
+u(x,d,\theta_u)+\beta EV_\theta(x,d)
+\right]
+}{
+\sum_{a\in\mathcal{Y}}
+\exp\left[
+u(x,j,\theta_u)+\beta EV_\theta(x,j)
+\right]
+}.
+\end{align*}
+The NFXP algorithm estimates the model using two nested loops. In the \textit{inner loop}, the expected value function is solved for a given parameter vector, $\theta$. This is done by iterating on the fixed point equation $EV_\theta = \Gamma_\theta(EV_\theta)$
+until convergence. Since the discount factor satisfies $\beta \in (0,1)$, the Bellman operator is a contraction mapping. This implies that the fixed point is unique and that value function iteration 
+\\
+\\
+In the \textit{outer loop}, the parameter vector is updated in order to maximize the likelihood of the observed choices. Given a parameter vector $\theta$, the inner loop first solves for $EV_\theta$. The resulting expected value function is then used to compute the conditional choice probabilities $P_\theta(y_{it}\mid x_{it})$. The choice log-likelihood is therefore given by
+\begin{align*}
+    \ell(\theta)
+=
+\sum_{i=1}^{N}
+\sum_{t=1}^{T_i}
+\log P_\theta(y_{it}\mid x_{it})
+\end{align*}
+where $y_{it}$ is the observed choice of consumer \textit{i} in period \textit{t}, and $x_{it}$ is the corresponding observed state. The outer-loop problem can then be written as
+\begin{align*}
+\hat{\theta}
+=
+\arg\max_{\theta}
+\ell(\theta).
+\end{align*}
+Thus, the estimated parameters are the values of $\theta$ that make the observed sequence of consumer choices most likely, given the expected value function solved in the inner loop. The \textit{outer loop} maximization is carried out using the BHHH algorithm. The BHHH algorithm updates the parameter vector using the gradient of the log-likelihood and approximates the Hessian by the outer product of the individual score contributions. Thus, for each candidate parameter vector, the inner loop first solves the expected value function, after which the \textit{outer loop} updates the parameters in the direction that increases the likelihood \cite{Train2009} p. 194. 
+
+
+
+\subsection{Price Process}
+In addition to the other state variables, we include an exogenous promotion state. Prices are determined by the weekly promotion state. We let $e_t = (e_{1t},e_{2t})$ where $e_{jt} = 1$ if brand \textit{j} is on promotion in week \textit{t} and $e_{jt}=0$ otherwise. 
+% Noget med markow decision process
+\\
+\\
+This implies that prices enter the utility function in the following way
+\begin{align*}
+    p_t(j) =
+    \begin{cases}
+        p_j^{\text{regular price}} & \text{if } e_{jt} = 0 \\
+        p_j^{\text{Promotion price}} & \text{if } e_{jt} = 1
+    \end{cases}
+\end{align*}
+Thus, the consumer's current purchase decision depends on both the current promotion state and expected future promotion states. However, it should be state that promotion states are treated as exogenous and evoles according to a Markov transition matrix. This implies that consumers may form expectations about future promotions. However, the (individual) consumer choices do not affect the firms future promotion decisions. 
+
+\subsection{Interpretation of switching costs and depletion}
+Two central parameters in the model are the switching costs parameter, $\beta^{sc}$ and the depletion parameter, $\beta^{dep}$. These parameters capture two different forms of state dependence. The switching cost parameter captures persistence in brand choice. The depletion parameter captures how the probability of purchasing changes with duration since the last purchase. 
+\begin{align*}
+    \beta^{sc}\boldsymbol{1}\{\ell_{it} \neq j\}
+\end{align*}
+The switching cost parameter enters the utility of purchasing brand $j$ when the brand differs from the previously purchased brand, $\ell_{it}$. If $\beta^{sc} > 0$, switching away from the previously purchased brand lowers current utility. Since the term enters the utility function with a negative sign (see section 2.3). This behaviour generates brand persistence. If positive, consumers are more likely to choose the same brand as the previous brand purchased. Larger values of $\beta^{sc}$ therefore implies stronger brand loyalty, habit formation or search costs. The switching costs parameter is motivated by the literature on brand persistence and consumer brand inertia. Empirically, \cite{article} shows substantial persistence in brand choice by households in consumer goods. 
+\\
+\\
+The depletion parameter, $\beta^{dep}$, captures the role of duration since last purchase. Hence, if consumers chooses the no purchase option, the utility is the following 
+\begin{align*}
+    u(0,x_{it},p_{it}) = \alpha_{it} - \beta^{dep}
+\end{align*} % Overvej om log odds skal uddybes mere
+If $\beta^{dep} > 0$, longer duration increases the log-odds of purchasing. The intuition behind that is that as more time passes since the previous purchase, the consumer's inventory is more likely to have depleted and therefore becomes likely to purchase again. If $\beta^{dep}<0$, the model instead implies that longer duration is associated with a lower probability of purchase, which seems counterintuitive. It should be noted hat we restrict the duration since last purchase to be capped at 25 weeks. This implies that all durations above 25 weeks are assigned the same terminal duration state (25 weeks). We impose this restriction in order to reduce state space.  
+\\
+\\
+It should be noted that we, in the simulation and empirical application of the model, assume both symmetric switching costs and a depletion parameter. Hence, we impose the following restrictions:
+\begin{align*}
+    \beta^{dep}_1 &= \beta^{dep}_2 = \beta^{dep} \\
+    \beta^{sc}_{12} &= \beta^{sc}_{21} = \beta^{sc}
+\end{align*}
+We introduce these restrictions to simplify the model and reduce the computational burden. A common depletion parameter implies that the duration since last purchase affects the probability of purchasing in the same way regardless of which brand was previously purchased. We argue that this is plausible since both brands of canned tuna carry the same size can. Similarly, a common switching cost parameter implies that switching from Glyngøre to Navito is assumed to have the same utility costs as switching from Navito to Glyngøre. One concern about not having a asymmetric switching costs parameter could be that consumers may find it easier to switch from a cheaper brand (Navito) to a more premium brand (Glyngøre) than the other way around. 
+
+\subsection{Initial conditions problem}
+A common challenge in (dynamic) discrete choice models is the initial conditions problem. The model contains lagged state variables, which in this case are the last brand purchased and the duration since last purchase. We assume that these states affect current consumer choice. However, at the beginning of the sample period, we did not observe the consumers' pre-sample history. Therefore, the first observed state may not correspond to the consumer's true initial state. This issue was first discussed by \cite{NBERc8909}, where the initial states may be correlated with unobserved heterogeneity. This can lead to bias in the parameter. We control for the initial states in our empirical application by removing each consumer's first observed purchase from the data. The first observed purchase is instead used to initialise the last brand purchased. However, there is also limitations to this approach. First, it reduces the sample size because consumer's first purchase is excluded from the likelihood. This is particular significant in our data set since consumers only has a minimum of five purchases and the data set only contains data for one year. Second, the model does not explain the consumer's first observed purchase. 
+
+\newpage
+\section{Monte Carlo Simulation}
+
+The purpose of the Monte Carlo simulation is to evaluate whether the NFXP estimator can recover the structural parameters of the dynamic demand model in a controlled environment. In the empirical application, the true parameters are unobserved. It is therefore difficult to know whether an estimated parameter reflects the underlying economic mechanism, numerical features of the estimator or misspecification of the model. The Monte Carlo exercise addresses this issue by generating artificial data from the model with known parameters and then re-estimating the model on the simulated data.
+
+\subsection{Data-generating process}
+
+The Monte Carlo exercise is based on a data-generating process (DGP). A DGP is a fully specified artificial environment that describes how the data would be generated if the model were the true description of consumer behaviour. In this paper, the DGP is not a separate model. It is the dynamic discrete choice model described above, evaluated at a chosen vector of true parameters. The DGP therefore specifies preferences, prices, the promotion process, state transitions and the distribution of the choice-specific shocks.
+\\
+\\
+The simulation proceeds as follows. First, the economic primitives are fixed. Second, the dynamic programming problem is solved at the true parameter vector, yielding the value function and the model-implied conditional choice probabilities. Third, a panel of artificial consumers is generated by drawing choices from these probabilities. The simulated panel therefore contains the same objects as the empirical data: weekly choices, last purchased brand, duration since last purchase and promotion states.
+\\
+\\
+The key advantage is that the true parameter vector is known by construction. If the estimator performs well under the correctly specified DGP, the estimates should be close to the true values across repeated simulated samples. If the estimator fails in this setting, this would indicate either numerical problems or weak identification before the model is taken to real data.
+
+\subsection{Calibration and simulation design}
+
+The Monte Carlo calibration chooses numerical values for the primitives of the DGP. The calibration uses the same choice set, state variables and dynamic structure as the empirical model, but fixes the structural parameters at known values. In the baseline simulation, the true parameter vector is
+\[
+\theta_0
+=
+\left(
+\alpha_2,\gamma,\beta^{\text{sc}},\beta^{\text{dep}}
+\right)
+=
+\left(
+0.50,\;0.05,\;0.40,\;0.275
+\right),
+\]
+with $\alpha_1$ normalized to zero.
+\\
+\\
+Prices follow the hi-lo promotion process described above, with regular prices, promotional discounts and promotion probabilities fixed before simulation. The discount factor is fixed at $0.95$, and the duration state is capped at $D_{\max}=25$ in the numerical implementation.
+
+% [Insert Table MC1, Panel A here: calibrated DGP primitives]
+
+\noindent
+The simulated panel contains $N=50{,}000$ consumers observed for $T=52$ weeks, after a burn-in period of 104 weeks. The burn-in reduces dependence on arbitrary initial states. The baseline exercise uses $R=50$ Monte Carlo replications, and the NFXP estimator is initialized from several starting values in each replication.
+
+% [Insert Table MC1, Panel B here: simulation and estimation design]
+
+\subsection{Estimation and Monte Carlo statistics}
+
+For each simulated panel, the model is re-estimated by maximum likelihood using the same NFXP procedure as in the empirical application. The inner loop solves the dynamic programming problem for each trial value of $\theta$, while the outer loop chooses the parameter vector that maximizes the simulated choice likelihood
+\[
+\ell_r(\theta)
+=
+\sum_{i=1}^{N}
+\sum_{t=1}^{T}
+\log P_{\theta}(y_{it}^{r}\mid x_{it}^{r}),
+\]
+where $r$ indexes the Monte Carlo replication. The promotion process is treated as known, so the estimated likelihood is based on the choice probabilities. For each replication, the solution with the highest likelihood across the starting values is retained.
+\\
+\\
+For each parameter $\theta_k$, parameter recovery is summarized by the mean estimate, bias and root mean squared error:
+\[
+\overline{\hat{\theta}}_k
+=
+\frac{1}{R}\sum_{r=1}^{R}\hat{\theta}_{rk},
+\qquad
+\text{Bias}_k
+=
+\overline{\hat{\theta}}_k-\theta_{0k},
+\]
+and
+\[
+\text{RMSE}_k
+=
+\left[
+\frac{1}{R}
+\sum_{r=1}^{R}
+\left(\hat{\theta}_{rk}-\theta_{0k}\right)^2
+\right]^{1/2}.
+\]
+We also record convergence and multi-start diagnostics. These statistics are informative about whether the likelihood is well behaved in the region of the true parameter vector.
+
+% [Insert Table MC2 here: Monte Carlo parameter recovery]
+% [Insert Monte Carlo convergence sentence here]
+% [Insert Figure MC1 here: distribution of Monte Carlo estimates relative to true values]
+\\
+\\
+In addition to parameter recovery, the simulation compares selected observed and predicted moments from the simulated panels. These include aggregate choice shares, purchase hazards by duration, brand shares by promotion state and switching rates. This checks whether the estimated model reproduces the behavioural patterns generated by the DGP, not only whether it recovers the numerical parameter values.
+
+% [Insert Table MC3 or Figure MC2 here: selected observed versus predicted simulated moments]
+
+\subsection{Interpretation}
+
+Under the correctly specified DGP, the NFXP estimator should recover the true parameter vector up to simulation error. In particular, the average estimates should be close to $\theta_0$, the bias and RMSE should be small relative to the true parameter values and the optimizer should converge reliably across replications. Failure to recover the true parameters in this controlled setting would indicate either numerical problems in the dynamic programming or likelihood routines, or weak identification of one or more structural parameters.
+\\
+\\
+The Monte Carlo simulation therefore serves two roles. First, it validates the implementation of the dynamic programming and estimation procedure used later in the empirical application. Second, it provides a benchmark for interpreting the empirical results. If the model performs well under the known homogeneous DGP but yields counterintuitive estimates in the scanner data, such as a negative depletion parameter, this suggests that the empirical discrepancy is more likely to come from features of the data that are absent from the baseline model, such as unobserved heterogeneity, imperfect measurement of inventories or quantity-dependent stock depletion.
+\\
+\\
+As a stress test, we also simulate data from a heterogeneous DGP in which consumers differ in $\alpha_2$ while the homogeneous model is still estimated. This illustrates how persistent differences in brand preferences can be absorbed by the homogeneous state-dependence parameters. The stress test is therefore directly related to the distinction between true and spurious state dependence discussed above.
+
+% [Insert Table MC4 here: heterogeneity stress test]
+
+
+\section{Monte Carlo Results}
