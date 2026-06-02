@@ -1,14 +1,17 @@
-#### This code was generated for a term paper in dynamic programming by Oliver Eiberg Jørgensen & Solveig Røndal-Liniger
-The project consists of the following
-"Model - Monte Carlo.ipynb" which contains the monte carlo simulation of the model 
-"Model - Empirical.ipynb" contains the empirical application of the model. We note that data clean up is also handled in that notebook
+#### Project Overview
 
-We have decided to contain functions used for the models in the same cells as other code for simplicity. 
+This code was developed for the term paper in the course Dynamic Programming, offered as part of the MSc in Economics at the University of Copenhagen, by Oliver Eiberg Jørgensen and Solveig Røndal-Liniger.
+
+The project consists of two main notebooks:
+
+· Model - Monte Carlo.ipynb: Contains the Monte Carlo simulation of the model. (Runtime: <10 min.)
+· Model - Empirical.ipynb: Contains the empirical application of the model, including data cleaning and preprocessing. (Runtime: <1 min.)
+
+NB: For simplicity, all functions used in the models are defined directly within the relevant notebook cells alongside the corresponding code.
 
 
+## Confidentiality Notice
 
+The data used in the empirical application is owned by Netto, Salling Group and must be treated as confidential.
 
-
-
-## NB: The data used in the empirical application is owned by Netto, Salling Group. Therefore it should be treated as CONFIDENTIAL. 
-Therefore the code, project and data should not be distributed to others without permission. 
+The code, project files, and underlying data must not be shared, distributed, or disclosed to third parties without prior permission.
