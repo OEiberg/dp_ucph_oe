@@ -1,4 +1,4 @@
-#### Project Overview
+## 1. Project Overview
 
 This code was developed for the term paper in the course Dynamic Programming, offered as part of the MSc in Economics at the University of Copenhagen, by Oliver Eiberg Jørgensen and Solveig Røndal-Liniger.
 
@@ -10,7 +10,7 @@ The project consists of two main notebooks:
 NB: For simplicity, all functions used in the models are defined directly within the relevant notebook cells alongside the corresponding code.
 
 
-## Confidentiality Notice
+## 2. Confidentiality Notice
 
 The data used in the empirical application is owned by Netto, Salling Group and must be treated as confidential.
 
